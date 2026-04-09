@@ -203,7 +203,7 @@
 
 const CONFIG = {
   capital:     5000,      // USD per session
-  lastUpdated: '09 Apr 2026',
+  lastUpdated: '10 Apr 2026',
   audusd:      0.7047,
 };
 
@@ -245,7 +245,7 @@ const TRADES = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LIVE PRICE FETCHING — multi-source with proper timeout
+// LIVE PRICE FETCHING — iulti-source with proper timeout
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Proper timeout that works in all browsers (no AbortSignal.timeout needed)
@@ -517,6 +517,9 @@ function renderOpenCard(trade, liveData) {
 
   open.innerHTML = `
     <div class="section-label">open position</div>
+    <div style="margin-bottom:8px;font-size:11px;color:#2a6e3f;letter-spacing:0.05em;border-left:2px solid #2a6e3f;padding-left:8px">
+      today's pick · ${trade.date} · ${trade.ticker} @ $${fmt(trade.buy.price)}
+    </div>
     <div class="open-card">
       <div class="open-card-header">
         <span class="ticker">${trade.ticker}</span>
@@ -555,6 +558,8 @@ function renderOpenCard(trade, liveData) {
       </div>
 
       <div class="open-note">source: ${liveData.source || 'api'} · auto-refreshes every 30s · ${new Date().toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane' })} AEST</div>
+      ${trade.reasoning ? `<div class="reasoning-label" style="margin-top:12px">reasoning</div><div class="reasoning-text">${trade.reasoning}</div>` : ''}
+      ${trade.note ? `<div class="trade-note" style="margin-top:4px">${trade.note}</div>` : ''}
     </div>`;
 }
 
