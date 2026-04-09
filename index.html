@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>alex :: paper trading</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0d0d0d;
+    color: #c8c8c8;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 32px;
+    opacity: 0;
+    animation: fadeIn 0.5s ease forwards;
+  }
+
+  @keyframes fadeIn { to { opacity: 1; } }
+
+  /* scanline */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px);
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  /* ── colours ── */
+  .green  { color: #3fb950; }
+  .red    { color: #f85149; }
+  .gold   { color: #d29922; }
+  .dim    { color: #444; }
+  .muted  { color: #333; }
+
+  /* ── cursor ── */
+  .cursor {
+    display: inline-block; width: 7px; height: 13px;
+    background: #c8c8c8; vertical-align: middle; margin-left: 3px;
+    animation: blink 1.1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ── header ── */
+  .header { border-bottom: 1px solid #1e1e1e; padding-bottom: 12px; margin-bottom: 20px; }
+  .header h1 { color: #e8e8e8; font-size: 13px; font-weight: normal; letter-spacing: 0.04em; }
+  .header .sub { color: #3a3a3a; font-size: 11px; margin-top: 3px; }
+
+  /* ── fetch status bar ── */
+  .status-bar {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 11px; color: #333;
+    margin-bottom: 20px; padding-bottom: 10px;
+    border-bottom: 1px solid #151515;
+  }
+  .status-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #333; flex-shrink: 0;
+    transition: background 0.4s;
+  }
+  .status-dot.ok      { background: #3fb950; box-shadow: 0 0 5px rgba(63,185,80,0.5); }
+  .status-dot.error   { background: #f85149; }
+  .status-dot.loading { background: #d29922; animation: pulse 0.9s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  .refresh-btn {
+    background: none; border: 1px solid #222; color: #444; padding: 1px 8px;
+    font-family: inherit; font-size: 11px; cursor: pointer; margin-left: auto;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .refresh-btn:hover { border-color: #555; color: #888; }
+
+  /* ── summary ── */
+  .summary { display: flex; gap: 36px; flex-wrap: wrap; margin-bottom: 28px; padding-bottom: 20px; border-bottom: 1px solid #151515; }
+  .stat label { color: #3a3a3a; font-size: 11px; display: block; text-transform: uppercase; letter-spacing: 0.08em; }
+  .stat .val { font-size: 14px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  /* ── section label ── */
+  .section-label { color: #2e2e2e; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 10px; margin-top: 24px; }
+
+  /* ── open position card ── */
+  .open-card {
+    border: 1px solid #1a3d24;
+    background: #070e0a;
+    padding: 16px 20px;
+    margin-bottom: 24px;
+    position: relative;
+    animation: slideIn 0.4s ease forwards;
+  }
+
+  .open-card-header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; }
+  .open-card .ticker { font-size: 15px; font-weight: bold; color: #e8e8e8; letter-spacing: 0.05em; }
+
+  .live-price-wrap { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+  .live-price { font-size: 22px; color: #e8e8e8; font-variant-numeric: tabular-nums; transition: color 0.3s; }
+  .live-price.up   { color: #3fb950; }
+  .live-price.down { color: #f85149; }
+  .live-change { font-size: 12px; }
+
+  .open-levels { display: flex; gap: 28px; font-size: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .open-levels span { color: #3a3a3a; margin-right: 4px; }
+
+  /* progress bar stop→price→target */
+  .progress-wrap { margin-bottom: 10px; }
+  .progress-label { font-size: 10px; color: #333; display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .progress-track { height: 3px; background: #1a1a1a; position: relative; }
+  .progress-fill  { height: 100%; background: #3fb950; transition: width 0.6s ease; }
+  .progress-fill.loss { background: #f85149; }
+
+  .unrealized { font-size: 13px; font-weight: bold; margin-top: 6px; }
+  .open-note  { font-size: 11px; color: #2e2e2e; margin-top: 6px; font-style: italic; }
+
+  /* market closed badge */
+  .mkt-status { font-size: 10px; padding: 1px 7px; border-radius: 2px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .mkt-open   { background: #0d2116; color: #3fb950; border: 1px solid #1a3d24; }
+  .mkt-closed { background: #111;    color: #555;    border: 1px solid #1e1e1e; }
+  .mkt-pre    { background: #1c1500; color: #d29922; border: 1px solid #3a2d00; }
+
+  /* ── trade rows ── */
+  .trade {
+    border-left: 2px solid #1e1e1e;
+    padding: 12px 0 12px 18px;
+    margin-bottom: 2px;
+    position: relative;
+    cursor: default;
+    transition: background 0.15s, padding-left 0.15s;
+    opacity: 0;
+    animation: slideIn 0.4s ease forwards;
+  }
+
+  @keyframes slideIn { from { opacity: 0; transform: translateX(-5px); } to { opacity: 1; transform: translateX(0); } }
+
+  .trade:hover { background: rgba(255,255,255,0.016); padding-left: 24px; }
+  .trade.win   { border-left-color: #3fb950; }
+  .trade.loss  { border-left-color: #f85149; }
+  .trade.cash  { border-left-color: #1e1e1e; }
+  .trade.win:hover  { box-shadow: inset 3px 0 14px -5px rgba(63,185,80,0.2); }
+  .trade.loss:hover { box-shadow: inset 3px 0 14px -5px rgba(248,81,73,0.2); }
+
+  .trade-header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 5px; flex-wrap: wrap; }
+  .trade-date   { color: #2e2e2e; font-size: 11px; }
+
+  .ticker-small { color: #e8e8e8; font-size: 13px; font-weight: bold; letter-spacing: 0.04em; transition: color 0.15s; }
+  .trade:hover .ticker-small { color: #fff; }
+  .trade.cash .ticker-small  { color: #3a3a3a; }
+
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 2px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .badge.win  { background: #0d2116; color: #3fb950; border: 1px solid #1a3d24; }
+  .badge.loss { background: #1f0d0d; color: #f85149; border: 1px solid #3d1a1a; }
+  .badge.cash { background: #111;    color: #3a3a3a; border: 1px solid #1a1a1a; }
+  .badge.open { background: #0c1a2e; color: #58a6ff; border: 1px solid #1a3d5e; animation: pulse 1.5s ease-in-out infinite; }
+
+  .trade-prices { display: flex; gap: 20px; font-size: 12px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
+  .trade-prices span { color: #2e2e2e; margin-right: 3px; }
+  .arrow { color: #222; font-size: 11px; transition: color 0.15s; }
+  .trade.win:hover  .arrow { color: #3fb950; }
+  .trade.loss:hover .arrow { color: #f85149; }
+
+  .pnl { font-size: 12px; font-weight: bold; margin-bottom: 5px; }
+
+  /* expandable reasoning */
+  .reasoning-toggle {
+    font-size: 11px; color: #2e2e2e; cursor: pointer; user-select: none;
+    display: inline-flex; align-items: center; gap: 4px;
+    transition: color 0.15s;
+  }
+  .reasoning-toggle:hover { color: #666; }
+  .caret { display: inline-block; transition: transform 0.2s; }
+  .reasoning-toggle.open .caret { transform: rotate(90deg); }
+
+  .reasoning-body { overflow: hidden; max-height: 0; opacity: 0; transition: max-height 0.3s ease, opacity 0.25s; }
+  .reasoning-body.open { max-height: 200px; opacity: 1; }
+  .reasoning-text { color: #484848; font-size: 11.5px; line-height: 1.75; max-width: 720px; padding-top: 5px; }
+  .trade-note { color: #252525; font-size: 11px; margin-top: 4px; font-style: italic; transition: color 0.2s; }
+  .trade:hover .trade-note { color: #3a3a3a; }
+
+  .divider { border: none; border-top: 1px solid #111; margin: 2px 0; }
+
+  .footer { margin-top: 32px; padding-top: 10px; border-top: 1px solid #151515; color: #252525; font-size: 11px; display: flex; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>alex@paper-trading ~ $<span class="cursor"></span></h1>
+  <div class="sub">$5,000 / session · max 2-day hold · stake (stocks) · binance au (crypto) · aud/usd 0.7047</div>
+</div>
+
+<div class="status-bar">
+  <div class="status-dot" id="statusDot"></div>
+  <span id="statusText">fetching live prices...</span>
+  <button class="refresh-btn" onclick="location.reload()">↻ refresh</button>
+</div>
+
+<div class="summary" id="summary"></div>
+<div id="openSection"></div>
+<div class="section-label">trade history</div>
+<div id="tradeLog"></div>
+<div class="footer">
+  <span>paper simulation · not financial advice</span>
+  <span id="footerTime"></span>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// DATA — update this block each session
+// ═══════════════════════════════════════════════════════════════════════════
+
+const CONFIG = {
+  capital:     5000,      // USD per session
+  lastUpdated: '09 Apr 2026',
+  audusd:      0.7047,
+};
+
+// sell: null means STILL OPEN — live price will be fetched
+// type: "stock" | "crypto"
+// cryptoId:     coingecko id (e.g. "bitcoin")
+// binanceSymbol: binance pair (e.g. "BTCUSDT") — primary source
+const TRADES = [
+  {
+    date:     '09 Apr 2026',
+    ticker:   'NVDA',
+    type:     'stock',
+    cryptoId: null,
+    binanceSymbol: null,
+    broker:   'Stake',
+    capital:  5000,
+    stop:     177.00,
+    target:   199.00,
+    buy:  { price: 193.50, time: '10:15 AM ET' },
+    sell: { price: 212.00, time: '3:55 PM ET', date: '09 Apr 2026' },
+    reasoning: 'Tariff pause catalyst. Trump suspended tariffs mid-session on Apr 9 after the bond market spooked him — largest positive macro surprise for semiconductors in 2026. Entered at 10:15 AM after the open gap settled and momentum confirmed. Tariff pause hit ~1 PM ET, NVDA surged straight through the $199 target. Closed EOD at 3:55 PM to lock gains rather than risk a next-day gap fill.',
+    note: '⚠ sell price estimated from confirmed QQQ +12% move · exact fill subject to stake confirmation',
+  },
+  {
+    date:     '10 Apr 2026',
+    ticker:   'BTC',
+    type:     'crypto',
+    cryptoId: 'bitcoin',
+    binanceSymbol: 'BTCUSDT',
+    broker:   'Binance AU',
+    capital:  5000,
+    stop:     73000,
+    target:   82500,
+    buy:  { price: 76000, time: 'morning dip entry' },
+    sell: null,
+    reasoning: 'Dollar weakness play on tariff pause. When tariffs are suspended the USD softens — directly bullish BTC. Iran ceasefire (Apr 8) + tariff pause (Apr 9) = back-to-back risk-on events. BTC technical setup was already strong going in: above EMA 50/100/200, RSI 54 (not overbought). Est Apr 9 close ~$78-80K. Waited for day-after profit-taking dip on Apr 10 morning before entering at $76K. No gap risk vs stocks since crypto trades 24/7. Stop $73K (~3.9%), target $82.5K (+8.6%). 2.2:1 R/R. Max hold Apr 12.',
+    note: '⚠ entry price conditional — only filled if BTC dipped to ~$76K on Apr 10 morning. If BTC held above $79K at open, trade was skipped.',
+  },
+];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LIVE PRICE FETCHING — multi-source with proper timeout
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Proper timeout that works in all browsers (no AbortSignal.timeout needed)
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms))
+  ]);
+}
+
+async function getJSON(url, timeoutMs = 5000) {
+  try {
+    const res = await withTimeout(fetch(url, { mode: 'cors' }), timeoutMs);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    console.warn(`[price] failed ${url} — ${e.message}`);
+    return null;
+  }
+}
+
+// ── Crypto: try 4 sources in order ──────────────────────────────────────
+async function fetchCryptoPrice(trade) {
+  const sym = trade.binanceSymbol;   // e.g. "BTCUSDT"
+  const cid = trade.cryptoId;        // e.g. "bitcoin"
+
+  // 1. Binance public API — fastest, excellent CORS
+  if (sym) {
+    const [ticker, prev] = await Promise.all([
+      getJSON(`https://api.binance.com/api/v3/ticker/price?symbol=${sym}`, 4000),
+      getJSON(`https://api.binance.com/api/v3/ticker/24hr?symbol=${sym}`, 4000),
+    ]);
+    if (ticker && ticker.price) {
+      const price = parseFloat(ticker.price);
+      const pct   = prev ? parseFloat(prev.priceChangePercent) : null;
+      setStatus('ok', `live · Binance · ${trade.ticker} $${price.toLocaleString()} · ${new Date().toLocaleTimeString()}`);
+      return { price, pct, source: 'Binance' };
+    }
+  }
+
+  // 2. CryptoCompare — reliable CORS
+  if (cid) {
+    const fsym = trade.ticker; // BTC, ETH etc
+    const data = await getJSON(`https://min-api.cryptocompare.com/data/pricemultifull?fsyms=${fsym}&tsyms=USD`, 5000);
+    if (data && data.RAW && data.RAW[fsym] && data.RAW[fsym].USD) {
+      const r = data.RAW[fsym].USD;
+      setStatus('ok', `live · CryptoCompare · ${trade.ticker} $${r.PRICE.toLocaleString()} · ${new Date().toLocaleTimeString()}`);
+      return { price: r.PRICE, pct: r.CHANGEPCT24HOUR, source: 'CryptoCompare' };
+    }
+  }
+
+  // 3. CoinGecko — free tier, sometimes rate-limited
+  if (cid) {
+    const data = await getJSON(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${cid}&vs_currencies=usd&include_24hr_change=true`, 6000
+    );
+    if (data && data[cid]) {
+      const price = data[cid].usd;
+      const pct   = data[cid].usd_24h_change ?? null;
+      setStatus('ok', `live · CoinGecko · ${trade.ticker} $${price.toLocaleString()} · ${new Date().toLocaleTimeString()}`);
+      return { price, pct, source: 'CoinGecko' };
+    }
+  }
+
+  // 4. Coinbase public API
+  if (trade.ticker) {
+    const data = await getJSON(`https://api.coinbase.com/v2/prices/${trade.ticker}-USD/spot`, 5000);
+    if (data && data.data && data.data.amount) {
+      const price = parseFloat(data.data.amount);
+      setStatus('ok', `live · Coinbase · ${trade.ticker} $${price.toLocaleString()} · ${new Date().toLocaleTimeString()}`);
+      return { price, pct: null, source: 'Coinbase' };
+    }
+  }
+
+  return null; // all sources failed
+}
+
+// ── Stocks: Yahoo Finance via two hostnames ──────────────────────────────
+async function fetchStockPrice(trade) {
+  for (const host of ['query1', 'query2']) {
+    const data = await getJSON(
+      `https://${host}.finance.yahoo.com/v8/finance/chart/${trade.ticker}?interval=1m&range=1d`, 5000
+    );
+    try {
+      const meta = data.chart.result[0].meta;
+      const price = meta.regularMarketPrice;
+      const prev  = meta.chartPreviousClose || meta.previousClose;
+      const pct   = ((price - prev) / prev) * 100;
+      setStatus('ok', `live · Yahoo · ${trade.ticker} $${price} · ${new Date().toLocaleTimeString()}`);
+      return { price, pct, source: 'Yahoo Finance' };
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function fetchLivePrice(trade) {
+  if (trade.type === 'crypto') return fetchCryptoPrice(trade);
+  if (trade.type === 'stock')  return fetchStockPrice(trade);
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MARKET HOURS (ET)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function marketStatus() {
+  const now = new Date();
+  // ET offset: EST = UTC-5, EDT = UTC-4 (Mar–Nov)
+  const month = now.getUTCMonth(); // 0-based
+  const etOffset = (month >= 2 && month <= 10) ? -4 : -5; // rough DST
+  const etHour = now.getUTCHours() + etOffset;
+  const etMin  = now.getUTCMinutes();
+  const day = now.getUTCDay(); // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) return 'closed';
+  const mins = etHour * 60 + etMin;
+  if (mins >= 240 && mins < 570)  return 'pre';    // 4am–9:30am
+  if (mins >= 570 && mins < 960)  return 'open';   // 9:30am–4pm
+  if (mins >= 960 && mins < 1200) return 'after';  // 4pm–8pm
+  return 'closed';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function calcClosed(trade) {
+  if (!trade.buy || !trade.sell) return { pnlDollar: 0, pnlPct: 0 };
+  const pnlPct    = (trade.sell.price - trade.buy.price) / trade.buy.price;
+  const pnlDollar = pnlPct * trade.capital;
+  return { pnlDollar, pnlPct: pnlPct * 100 };
+}
+
+function calcOpen(trade, livePrice) {
+  if (!trade.buy || !livePrice) return null;
+  const pnlPct    = (livePrice - trade.buy.price) / trade.buy.price;
+  const pnlDollar = pnlPct * trade.capital;
+  // progress: 0 = at stop, 1 = at target
+  const range    = trade.target - trade.stop;
+  const progress = Math.max(0, Math.min(1, (livePrice - trade.stop) / range));
+  return { pnlDollar, pnlPct: pnlPct * 100, progress };
+}
+
+function summarise() {
+  let totalPnl = 0, wins = 0, losses = 0, cashSessions = 0, closed = 0;
+  for (const t of TRADES) {
+    if (t.type === 'cash') { cashSessions++; continue; }
+    if (t.sell) {
+      const { pnlDollar } = calcClosed(t);
+      totalPnl += pnlDollar;
+      closed++;
+      if (pnlDollar >= 0) wins++; else losses++;
+    }
+  }
+  return { totalPnl, wins, losses, closed, cashSessions };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RENDERING
+// ═══════════════════════════════════════════════════════════════════════════
+
+function fmt(n, decimals = 2) {
+  return n.toFixed(decimals);
+}
+
+function fmtDollar(n) {
+  const abs = Math.abs(n).toFixed(2);
+  return (n >= 0 ? '+$' : '-$') + abs;
+}
+
+function renderSummary(extra = {}) {
+  const s = summarise();
+  const totalPnl = s.totalPnl + (extra.unrealizedPnl || 0);
+  const winRate = s.closed > 0 ? Math.round((s.wins / s.closed) * 100) : '—';
+
+  document.getElementById('summary').innerHTML = `
+    <div class="stat">
+      <label>total p&amp;l</label>
+      <div class="val ${totalPnl >= 0 ? 'green' : 'red'}" id="pnlVal">${fmtDollar(totalPnl)}</div>
+    </div>
+    <div class="stat">
+      <label>closed trades</label>
+      <div class="val">${s.closed}</div>
+    </div>
+    <div class="stat">
+      <label>wins</label>
+      <div class="val green">${s.wins}</div>
+    </div>
+    <div class="stat">
+      <label>losses</label>
+      <div class="val ${s.losses > 0 ? 'red' : 'dim'}">${s.losses}</div>
+    </div>
+    <div class="stat">
+      <label>win rate</label>
+      <div class="val ${s.wins > 0 && s.losses === 0 ? 'green' : ''}">${winRate}${typeof winRate === 'number' ? '%' : ''}</div>
+    </div>
+    <div class="stat">
+      <label>cash sessions</label>
+      <div class="val dim">${s.cashSessions}</div>
+    </div>
+    <div class="stat">
+      <label>capital / session</label>
+      <div class="val">$${CONFIG.capital.toLocaleString()}</div>
+    </div>
+  `;
+  animateCountUp(document.getElementById('pnlVal'), totalPnl);
+}
+
+function animateCountUp(el, target) {
+  if (!el) return;
+  const dur = 900;
+  const start = performance.now();
+  function step(now) {
+    const t = Math.min((now - start) / dur, 1);
+    const eased = 1 - Math.pow(1 - t, 3);
+    const val = eased * target;
+    el.textContent = fmtDollar(val);
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+function mktBadge() {
+  const s = marketStatus();
+  if (s === 'open')   return `<span class="mkt-status mkt-open">mkt open</span>`;
+  if (s === 'pre')    return `<span class="mkt-status mkt-pre">pre-market</span>`;
+  return `<span class="mkt-status mkt-closed">mkt closed</span>`;
+}
+
+function renderOpenCard(trade, liveData) {
+  const open = document.getElementById('openSection');
+  if (!liveData) {
+    open.innerHTML = `
+      <div class="section-label">open position</div>
+      <div class="open-card">
+        <div class="open-card-header">
+          <span class="ticker">${trade.ticker}</span>
+          <span class="badge open">open</span>
+          ${mktBadge()}
+          <span class="dim" style="font-size:11px">${trade.broker}</span>
+        </div>
+        <div style="color:#555;margin-bottom:10px;font-size:12px">
+          ⚠ all price sources failed — check console for details
+        </div>
+        <div class="open-levels">
+          <div><span>entry</span>$${fmt(trade.buy.price)}</div>
+          <div><span>stop</span><span class="red">$${fmt(trade.stop)}</span></div>
+          <div><span>target</span><span class="green">$${fmt(trade.target)}</span></div>
+        </div>
+        <div style="margin-top:10px;display:flex;align-items:center;gap:8px;font-size:11px">
+          <span style="color:#444">enter price manually:</span>
+          <input id="manualPrice" type="number" placeholder="${fmt(trade.buy.price)}"
+            style="background:#111;border:1px solid #2a2a2a;color:#c8c8c8;padding:2px 6px;
+                   font-family:inherit;font-size:11px;width:100px;outline:none"
+            onkeydown="if(event.key==='Enter') applyManual(${JSON.stringify(trade.ticker)})">
+          <button onclick="applyManual('${trade.ticker}')"
+            style="background:none;border:1px solid #2a2a2a;color:#555;padding:1px 8px;
+                   font-family:inherit;font-size:11px;cursor:pointer">apply</button>
+        </div>
+      </div>`;
+    return;
+  }
+
+  const calc = calcOpen(trade, liveData.price);
+  const upDown = liveData.price >= trade.buy.price ? 'up' : 'down';
+  const changeStr = liveData.pct != null
+    ? ` <span class="${liveData.pct >= 0 ? 'green' : 'red'}">${liveData.pct >= 0 ? '+' : ''}${fmt(liveData.pct, 2)}% today</span>`
+    : '';
+
+  open.innerHTML = `
+    <div class="section-label">open position</div>
+    <div class="open-card">
+      <div class="open-card-header">
+        <span class="ticker">${trade.ticker}</span>
+        <span class="badge open">open</span>
+        ${mktBadge()}
+        <span class="dim" style="font-size:11px">${trade.type} · ${trade.broker}</span>
+      </div>
+
+      <div class="live-price-wrap">
+        <div class="live-price ${upDown}" id="livePrice">$${fmt(liveData.price)}</div>
+        <div class="live-change">${changeStr}</div>
+      </div>
+
+      <div class="open-levels">
+        <div><span>entry</span>$${fmt(trade.buy.price)} @ ${trade.buy.time}</div>
+        <div><span>stop</span><span class="red">$${fmt(trade.stop)}</span></div>
+        <div><span>target</span><span class="green">$${fmt(trade.target)}</span></div>
+        <div><span>deployed</span>$${trade.capital.toLocaleString()}</div>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-label">
+          <span class="red">stop $${fmt(trade.stop)}</span>
+          <span class="dim">$${fmt(liveData.price)}</span>
+          <span class="green">target $${fmt(trade.target)}</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill ${calc && calc.pnlPct < 0 ? 'loss' : ''}"
+               style="width: ${calc ? fmt(calc.progress * 100, 1) : 0}%"></div>
+        </div>
+      </div>
+
+      <div class="unrealized ${calc && calc.pnlDollar >= 0 ? 'green' : 'red'}">
+        unrealized: ${calc ? fmtDollar(calc.pnlDollar) : '—'}
+        ${calc ? `<span style="font-weight:normal;font-size:11px"> (${calc.pnlPct >= 0 ? '+' : ''}${fmt(calc.pnlPct)}%)</span>` : ''}
+      </div>
+
+      <div class="open-note">source: ${liveData.source || 'api'} · auto-refreshes every 30s · ${new Date().toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane' })} AEST</div>
+    </div>`;
+}
+
+function renderTradeLog() {
+  const log = document.getElementById('tradeLog');
+  const rows = [];
+  let delay = 0;
+
+  const reversed = [...TRADES].reverse(); // newest first
+
+  for (const trade of reversed) {
+    delay += 80;
+    if (trade.type === 'cash') {
+      rows.push(`
+        <div class="trade cash" style="animation-delay:${delay}ms">
+          <div class="trade-header">
+            <span class="trade-date">${trade.date}</span>
+            <span class="ticker-small">CASH</span>
+            <span class="badge cash">no trade</span>
+          </div>
+          ${trade.reasoning ? `
+          <div class="reasoning-toggle" onclick="toggleReason(this)">
+            <span class="caret">▶</span> reasoning
+          </div>
+          <div class="reasoning-body">
+            <div class="reasoning-text">${trade.reasoning}</div>
+          </div>` : ''}
+        </div>
+        <hr class="divider">`);
+      continue;
+    }
+
+    if (!trade.sell) continue; // open trades rendered in open card
+
+    const { pnlDollar, pnlPct } = calcClosed(trade);
+    const result = pnlDollar >= 0 ? 'win' : 'loss';
+
+    rows.push(`
+      <div class="trade ${result}" style="animation-delay:${delay}ms">
+        <div class="trade-header">
+          <span class="trade-date">${trade.date}</span>
+          <span class="ticker-small">${trade.ticker}</span>
+          <span class="badge ${result}">${result}</span>
+          <span class="dim" style="font-size:11px">${trade.type} · ${trade.broker || ''}</span>
+        </div>
+        <div class="trade-prices">
+          <div><span>buy</span>$${fmt(trade.buy.price)} @ ${trade.buy.time}</div>
+          <span class="arrow">→</span>
+          <div><span>sell</span>$${fmt(trade.sell.price)} @ ${trade.sell.time}</div>
+          <div><span>deployed</span>$${trade.capital.toLocaleString()}</div>
+        </div>
+        <div class="pnl ${result === 'win' ? 'green' : 'red'}">
+          ${fmtDollar(pnlDollar)} &nbsp;(${pnlPct >= 0 ? '+' : ''}${fmt(pnlPct)}%)
+        </div>
+        <div class="reasoning-toggle" onclick="toggleReason(this)">
+          <span class="caret">▶</span> reasoning
+        </div>
+        <div class="reasoning-body">
+          <div class="reasoning-text">${trade.reasoning}</div>
+          ${trade.note ? `<div class="trade-note">${trade.note}</div>` : ''}
+        </div>
+      </div>
+      <hr class="divider">`);
+  }
+
+  log.innerHTML = rows.join('');
+}
+
+function toggleReason(el) {
+  el.classList.toggle('open');
+  el.nextElementSibling.classList.toggle('open');
+}
+
+// ── status bar helpers ──
+function setStatus(state, text) {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  dot.className = `status-dot ${state}`;
+  txt.textContent = text;
+}
+
+// ── manual price override (when all APIs fail) ──
+function applyManual(ticker) {
+  const input = document.getElementById('manualPrice');
+  const price = parseFloat(input && input.value);
+  if (!price || isNaN(price)) return;
+  const trade = TRADES.find(t => t.ticker === ticker && !t.sell);
+  if (!trade) return;
+  renderOpenCard(trade, { price, pct: null, source: 'manual' });
+  setStatus('ok', `manual price · ${ticker} $${price.toLocaleString()} · verify on exchange`);
+  // update summary
+  const calc = calcOpen(trade, price);
+  renderSummary({ unrealizedPnl: calc ? calc.pnlDollar : 0 });
+}
+
+// ── footer time ──
+function updateFooter() {
+  const aest = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Brisbane',
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  document.getElementById('footerTime').textContent = `fetched ${aest} AEST`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MAIN — runs on load and every 30s if there are open trades
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function run() {
+  // Render static parts immediately
+  renderSummary();
+  renderTradeLog();
+  updateFooter();
+
+  const openTrades = TRADES.filter(t => t.type !== 'cash' && !t.sell && t.buy);
+
+  if (openTrades.length === 0) {
+    document.getElementById('openSection').innerHTML = '';
+    setStatus('ok', `no open positions · last updated ${CONFIG.lastUpdated}`);
+    return;
+  }
+
+  // Fetch live prices for all open trades
+  setStatus('loading', 'fetching live prices...');
+
+  for (const trade of openTrades) {
+    setStatus('loading', `trying Binance → CryptoCompare → CoinGecko → Coinbase for ${trade.ticker}...`);
+    const liveData = await fetchLivePrice(trade);
+    if (liveData) {
+      renderOpenCard(trade, liveData);
+      const calc = calcOpen(trade, liveData.price);
+      renderSummary({ unrealizedPnl: calc ? calc.pnlDollar : 0 });
+      // setStatus called inside fetchLivePrice on success
+    } else {
+      renderOpenCard(trade, null);
+      setStatus('error', `all price sources failed for ${trade.ticker} — enter manually below or refresh`);
+    }
+  }
+
+  updateFooter();
+}
+
+// auto-refresh every 30s when there are open trades
+const hasOpen = TRADES.some(t => t.type !== 'cash' && !t.sell && t.buy);
+if (hasOpen) setInterval(run, 30000);
+
+// kick off
+run();
+</script>
+</body>
+</html>
