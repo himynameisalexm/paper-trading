@@ -162,19 +162,10 @@
 
   .pnl { font-size: 12px; font-weight: bold; margin-bottom: 5px; }
 
-  /* expandable reasoning */
-  .reasoning-toggle {
-    font-size: 11px; color: #2e2e2e; cursor: pointer; user-select: none;
-    display: inline-flex; align-items: center; gap: 4px;
-    transition: color 0.15s;
-  }
-  .reasoning-toggle:hover { color: #666; }
-  .caret { display: inline-block; transition: transform 0.2s; }
-  .reasoning-toggle.open .caret { transform: rotate(90deg); }
-
-  .reasoning-body { overflow: hidden; max-height: 0; opacity: 0; transition: max-height 0.3s ease, opacity 0.25s; }
-  .reasoning-body.open { max-height: 200px; opacity: 1; }
-  .reasoning-text { color: #484848; font-size: 11.5px; line-height: 1.75; max-width: 720px; padding-top: 5px; }
+  /* reasoning — always visible */
+  .reasoning-label { font-size: 11px; color: #2e2e2e; margin-top: 6px; }
+  .reasoning-body { margin-top: 2px; }
+  .reasoning-text { color: #484848; font-size: 11.5px; line-height: 1.75; max-width: 720px; padding-top: 2px; }
   .trade-note { color: #252525; font-size: 11px; margin-top: 4px; font-style: italic; transition: color 0.2s; }
   .trade:hover .trade-note { color: #3a3a3a; }
 
@@ -585,9 +576,7 @@ function renderTradeLog() {
             <span class="badge cash">no trade</span>
           </div>
           ${trade.reasoning ? `
-          <div class="reasoning-toggle" onclick="toggleReason(this)">
-            <span class="caret">▶</span> reasoning
-          </div>
+          <div class="reasoning-label">reasoning</div>
           <div class="reasoning-body">
             <div class="reasoning-text">${trade.reasoning}</div>
           </div>` : ''}
@@ -618,9 +607,7 @@ function renderTradeLog() {
         <div class="pnl ${result === 'win' ? 'green' : 'red'}">
           ${fmtDollar(pnlDollar)} &nbsp;(${pnlPct >= 0 ? '+' : ''}${fmt(pnlPct)}%)
         </div>
-        <div class="reasoning-toggle" onclick="toggleReason(this)">
-          <span class="caret">▶</span> reasoning
-        </div>
+        <div class="reasoning-label">reasoning</div>
         <div class="reasoning-body">
           <div class="reasoning-text">${trade.reasoning}</div>
           ${trade.note ? `<div class="trade-note">${trade.note}</div>` : ''}
@@ -632,10 +619,6 @@ function renderTradeLog() {
   log.innerHTML = rows.join('');
 }
 
-function toggleReason(el) {
-  el.classList.toggle('open');
-  el.nextElementSibling.classList.toggle('open');
-}
 
 // ── status bar helpers ──
 function setStatus(state, text) {
