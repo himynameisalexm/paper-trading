@@ -476,7 +476,8 @@ function animateCountUp(el, target) {
   requestAnimationFrame(step);
 }
 
-function mktBadge() {
+function mktBadge(type) {
+  if (type === 'crypto') return `<span class="mkt-status mkt-open">24/7</span>`;
   const s = marketStatus();
   if (s === 'open')   return `<span class="mkt-status mkt-open">mkt open</span>`;
   if (s === 'pre')    return `<span class="mkt-status mkt-pre">pre-market</span>`;
@@ -492,7 +493,7 @@ function renderOpenCard(trade, liveData) {
         <div class="open-card-header">
           <span class="ticker">${trade.ticker}</span>
           <span class="badge open">open</span>
-          ${mktBadge()}
+          ${mktBadge(trade.type)}
           <span class="dim" style="font-size:11px">${trade.broker}</span>
         </div>
         <div style="color:#555;margin-bottom:10px;font-size:12px">
@@ -529,7 +530,7 @@ function renderOpenCard(trade, liveData) {
       <div class="open-card-header">
         <span class="ticker">${trade.ticker}</span>
         <span class="badge open">open</span>
-        ${mktBadge()}
+        ${mktBadge(trade.type)}
         <span class="dim" style="font-size:11px">${trade.type} · ${trade.broker}</span>
       </div>
 
