@@ -1,0 +1,44 @@
+name: Daily Trading Agent
+
+on:
+  schedule:
+    # Runs at midnight UTC = 10:00 AM AEST (UTC+10)
+    # Mon–Fri only (US market weekdays)
+    - cron: '0 0 * * 1-5'
+  workflow_dispatch:  # allow manual trigger from GitHub UI
+
+jobs:
+  run-trade:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install anthropic
+
+      - name: Run trading agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/trade_agent.py
+
+      - name: Commit and push updated dashboard
+        run: |
+          git config user.name  "trading-agent[bot]"
+          git config user.email "trading-agent@users.noreply.github.com"
+          git add index.html
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            DATE=$(date -u '+%d %b %Y')
+            git commit -m "auto: trading update ${DATE}"
+            git push origin main
+          fi
