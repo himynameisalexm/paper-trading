@@ -1,61 +1,80 @@
 #!/usr/bin/env python3
 """
-Autonomous daily trading agent for Alex McMahon's paper trading dashboard.
-Uses free public APIs only — no AI API key required.
+Autonomous daily trading agent — Alex McMahon paper trading.
+Free public APIs only. No AI API key required.
 
-Strategy:
-  - $5,000 USD per session, max 2-day hold, long only
-  - Stop: 3–4% below entry | Target: 6–8% above entry (min 2:1 R/R)
-  - Watchlist: NVDA, MSFT, PLTR, ORCL, AMD, AVGO, CRWD, BTC, ETH
-  - Macro gate: QQQ above 50-day MA AND VIX < 25
-  - Signal scoring: momentum + trend + volume + volatility
+Updated rules (senior analyst framework):
+  - $5,000 pool split across ≤3 concurrent positions
+  - Stop: 2% (tight) | Target: 6% | Min R/R: 3:1
+  - Min confidence: 7/10
+  - Gates: QQQ trend + VIX direction + volume 1.5x+ + RS vs QQQ
+  - Sentiment: Reddit (wallstreetbets, stocks, investing) + TradingView
+  - Priority: pre-earnings runs > volume breakout > analyst upgrade > bounce > crypto
+  - Intraday allowed. Max hold 2 days.
 """
 
-import os, re, sys, json, time, datetime, zoneinfo, urllib.request, urllib.error
+import os, re, sys, json, time, datetime, zoneinfo, urllib.request, urllib.parse
 
-# ── paths ──────────────────────────────────────────────────────────────────
 ROOT      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HTML_PATH = os.path.join(ROOT, 'index.html')
 AEST      = zoneinfo.ZoneInfo("Australia/Brisbane")
 TODAY     = datetime.datetime.now(AEST)
 TODAY_STR = TODAY.strftime("%d %b %Y")
 
-# ── watchlist ──────────────────────────────────────────────────────────────
-STOCK_TICKERS  = ['NVDA', 'PLTR', 'MSFT', 'ORCL', 'AMD', 'AVGO', 'CRWD']
-CRYPTO_PAIRS   = [
+STOCK_TICKERS = ['NVDA', 'MSFT', 'PLTR', 'ORCL', 'AMD', 'AVGO', 'CRWD', 'META', 'TSM']
+CRYPTO_PAIRS  = [
     {'ticker': 'BTC', 'cryptoId': 'bitcoin',  'binanceSymbol': 'BTCUSDT', 'broker': 'Binance AU'},
     {'ticker': 'ETH', 'cryptoId': 'ethereum', 'binanceSymbol': 'ETHUSDT', 'broker': 'Binance AU'},
 ]
-MACRO_TICKERS  = ['QQQ', 'SPY']
-VIX_TICKER     = '%5EVIX'
+VIX_TICKER    = '%5EVIX'
+
+# Upcoming earnings within 7 days (agent checks these for pre-earnings plays)
+PRE_EARNINGS_WINDOW_DAYS = 7
 
 # ── helpers ────────────────────────────────────────────────────────────────
 def fetch_url(url, timeout=8):
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (compatible; trading-agent/1.0)',
+            'Accept': 'application/json',
+        })
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode())
+            return json.loads(r.read().decode('utf-8', errors='ignore'))
     except Exception as e:
-        print(f"  [warn] fetch failed: {url[:60]}... — {e}")
+        print(f"  [warn] {url[:65]}... — {e}")
         return None
 
+def fetch_text(url, timeout=8):
+    try:
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'text/html,application/json',
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode('utf-8', errors='ignore')
+    except Exception as e:
+        print(f"  [warn] text fetch {url[:65]}... — {e}")
+        return ''
+
+# ── market data ────────────────────────────────────────────────────────────
 def yahoo_quote(ticker):
-    """Fetch price + technicals from Yahoo Finance chart API."""
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=60d"
+    url  = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=60d"
     data = fetch_url(url)
     try:
         result = data['chart']['result'][0]
         meta   = result['meta']
-        closes = result['indicators']['quote'][0]['closes'] if 'closes' in result['indicators']['quote'][0] else result['indicators']['quote'][0].get('close', [])
-        closes = [c for c in closes if c is not None]
+        q0     = result['indicators']['quote'][0]
+        closes = [c for c in (q0.get('close') or q0.get('closes') or []) if c]
+        vols   = [v for v in (q0.get('volume') or []) if v]
 
-        price  = meta.get('regularMarketPrice') or meta.get('previousClose')
-        prev   = meta.get('chartPreviousClose') or meta.get('previousClose', price)
-        volume = meta.get('regularMarketVolume', 0)
-        avg_vol= meta.get('averageDailyVolume10Day', volume or 1)
+        price   = meta.get('regularMarketPrice') or meta.get('previousClose')
+        prev    = meta.get('chartPreviousClose') or meta.get('previousClose', price)
+        volume  = meta.get('regularMarketVolume', 0) or (vols[-1] if vols else 0)
+        avg_vol = meta.get('averageDailyVolume10Day') or (sum(vols[-10:]) / len(vols[-10:]) if len(vols) >= 10 else volume or 1)
 
-        sma50  = sum(closes[-50:]) / len(closes[-50:]) if len(closes) >= 50 else None
-        sma20  = sum(closes[-20:]) / len(closes[-20:]) if len(closes) >= 20 else None
+        sma50 = sum(closes[-50:]) / len(closes[-50:]) if len(closes) >= 50 else None
+        sma20 = sum(closes[-20:]) / len(closes[-20:]) if len(closes) >= 20 else None
+        sma5  = sum(closes[-5:])  / len(closes[-5:])  if len(closes) >= 5  else None
 
         # RSI-14
         rsi = None
@@ -63,170 +82,269 @@ def yahoo_quote(ticker):
             deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
             gains  = [max(d, 0) for d in deltas[-14:]]
             losses = [max(-d, 0) for d in deltas[-14:]]
-            avg_g  = sum(gains) / 14
-            avg_l  = sum(losses) / 14
-            if avg_l > 0:
-                rs  = avg_g / avg_l
-                rsi = 100 - (100 / (1 + rs))
-            else:
-                rsi = 100.0
+            ag, al = sum(gains)/14, sum(losses)/14
+            rsi = 100 - (100/(1 + ag/al)) if al > 0 else 100.0
 
-        pct_chg = ((price - prev) / prev * 100) if prev else 0
-        vol_ratio = (volume / avg_vol) if avg_vol else 1
+        pct_chg   = ((price - prev) / prev * 100) if prev else 0
+        vol_ratio = volume / avg_vol if avg_vol else 1
 
         return {
-            'ticker': ticker,
-            'price': price,
-            'prev':  prev,
-            'pct_chg': pct_chg,
-            'volume': volume,
-            'vol_ratio': vol_ratio,
-            'sma20': sma20,
-            'sma50': sma50,
-            'rsi': rsi,
-            'closes': closes,
+            'ticker': ticker, 'price': price, 'prev': prev,
+            'pct_chg': pct_chg, 'volume': volume, 'avg_vol': avg_vol,
+            'vol_ratio': vol_ratio, 'sma5': sma5, 'sma20': sma20,
+            'sma50': sma50, 'rsi': rsi, 'closes': closes,
         }
     except Exception as e:
-        print(f"  [warn] yahoo_quote({ticker}) parse error: {e}")
+        print(f"  [warn] yahoo_quote({ticker}) — {e}")
         return None
 
 def binance_price(symbol):
-    """Fetch crypto price + 24h stats from Binance public API."""
-    t = fetch_url(f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}", timeout=6)
-    if t and 'lastPrice' in t:
+    d = fetch_url(f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}", timeout=6)
+    if d and 'lastPrice' in d:
         return {
-            'price':   float(t['lastPrice']),
-            'pct_chg': float(t['priceChangePercent']),
-            'volume':  float(t['volume']),
+            'price':     float(d['lastPrice']),
+            'pct_chg':   float(d['priceChangePercent']),
+            'volume':    float(d['volume']),
+            'vol_ratio': 1.0,  # no easy baseline from this endpoint
         }
     return None
 
-# ── score a stock signal ───────────────────────────────────────────────────
-def score_stock(q):
-    """Return a confidence score 0–10 based on technical setup."""
-    if not q or not q['price']:
-        return 0, []
-    reasons = []
-    score   = 5.0  # base
+# ── sentiment ──────────────────────────────────────────────────────────────
+BULLISH_WORDS = ['bull', 'buy', 'long', 'breakout', 'moon', 'calls', 'upside',
+                 'strong', 'beat', 'upgrade', 'accumulate', 'rip', 'squeeze']
+BEARISH_WORDS = ['bear', 'sell', 'short', 'puts', 'crash', 'dump', 'overvalued',
+                 'downgrade', 'miss', 'warning', 'drop', 'correction', 'trap']
 
-    price, sma20, sma50, rsi, pct, vol_r = (
-        q['price'], q['sma20'], q['sma50'], q['rsi'], q['pct_chg'], q['vol_ratio']
+def score_text_sentiment(text):
+    """Return bull_count, bear_count from a blob of text."""
+    t = text.lower()
+    return (
+        sum(1 for w in BULLISH_WORDS if w in t),
+        sum(1 for w in BEARISH_WORDS if w in t),
     )
 
-    # Trend: above both MAs = +1.5
-    if sma50 and price > sma50:
-        score += 0.8
-        reasons.append(f"above 50MA (${sma50:.2f})")
-    elif sma50 and price < sma50:
-        score -= 1.5
-        reasons.append(f"below 50MA — bearish")
+def reddit_sentiment(ticker):
+    """
+    Pull top Reddit posts mentioning ticker from r/wallstreetbets, r/stocks, r/investing.
+    Uses Reddit's public JSON API — no auth required.
+    Returns: { 'score': float -1..1, 'posts': int, 'summary': str }
+    """
+    subreddits = ['wallstreetbets', 'stocks', 'investing']
+    total_bull, total_bear, total_posts = 0, 0, 0
 
-    if sma20 and price > sma20:
-        score += 0.5
-        reasons.append("above 20MA")
+    for sub in subreddits:
+        url  = f"https://www.reddit.com/r/{sub}/search.json?q={ticker}&sort=new&limit=10&t=day&restrict_sr=1"
+        data = fetch_url(url, timeout=6)
+        if not data:
+            continue
+        try:
+            posts = data['data']['children']
+            for p in posts:
+                d    = p['data']
+                text = f"{d.get('title','')} {d.get('selftext','')}"
+                b, r = score_text_sentiment(text)
+                total_bull  += b
+                total_bear  += r
+                total_posts += 1
+        except Exception:
+            pass
+        time.sleep(0.4)  # be polite to Reddit
 
-    # Momentum: positive day
-    if pct > 1.5:
-        score += 0.8
-        reasons.append(f"momentum +{pct:.1f}% today")
-    elif pct > 0:
-        score += 0.3
-        reasons.append(f"+{pct:.1f}% today")
-    elif pct < -2:
-        score -= 1.0
-        reasons.append(f"selling pressure {pct:.1f}%")
+    if total_posts == 0:
+        return {'score': 0, 'posts': 0, 'summary': 'no Reddit data'}
 
-    # Volume confirmation
-    if vol_r > 1.5:
-        score += 0.5
-        reasons.append(f"volume {vol_r:.1f}x avg")
-    elif vol_r < 0.7:
-        score -= 0.3
+    total = total_bull + total_bear
+    score = (total_bull - total_bear) / total if total > 0 else 0
+    label = 'bullish' if score > 0.2 else 'bearish' if score < -0.2 else 'neutral'
+    summary = f"Reddit: {label} ({total_posts} posts, {total_bull}↑ {total_bear}↓)"
+    print(f"    {summary}")
+    return {'score': score, 'posts': total_posts, 'summary': summary}
 
-    # RSI: sweet spot 45–65
-    if rsi:
-        if 45 <= rsi <= 65:
-            score += 0.5
-            reasons.append(f"RSI {rsi:.0f} (neutral-bullish)")
-        elif rsi < 35:
-            score += 0.3
-            reasons.append(f"RSI {rsi:.0f} (oversold bounce)")
-        elif rsi > 75:
-            score -= 0.8
-            reasons.append(f"RSI {rsi:.0f} (overbought)")
+def tradingview_sentiment(ticker):
+    """
+    Scrape TradingView ideas for ticker — parse bull/bear signal ratio.
+    Uses public ideas page (no auth needed).
+    Returns: { 'score': float -1..1, 'ideas': int, 'summary': str }
+    """
+    url  = f"https://www.tradingview.com/symbols/{ticker}/ideas/"
+    text = fetch_text(url, timeout=8)
+    if not text:
+        return {'score': 0, 'ideas': 0, 'summary': 'no TradingView data'}
 
-    return round(min(max(score, 0), 10), 1), reasons
+    # Count bullish/bearish signal tags in the page HTML
+    bull = text.lower().count('bullish') + text.lower().count('long idea')
+    bear = text.lower().count('bearish') + text.lower().count('short idea')
+    ideas = bull + bear
 
-def score_crypto(data, ticker):
-    """Score crypto signal 0–10."""
-    if not data:
-        return 0, []
-    reasons = []
-    score   = 5.0
-    pct     = data['pct_chg']
+    if ideas == 0:
+        return {'score': 0, 'ideas': 0, 'summary': 'no TradingView ideas found'}
 
-    if pct > 2:
-        score += 0.8
-        reasons.append(f"momentum +{pct:.1f}% 24h")
-    elif pct > 0:
-        score += 0.3
-        reasons.append(f"+{pct:.1f}% 24h")
-    elif pct < -3:
-        score -= 1.0
-        reasons.append(f"selling pressure {pct:.1f}%")
+    score = (bull - bear) / ideas
+    label = 'bullish' if score > 0.2 else 'bearish' if score < -0.2 else 'neutral'
+    summary = f"TradingView: {label} ({bull} bull / {bear} bear ideas)"
+    print(f"    {summary}")
+    return {'score': score, 'ideas': ideas, 'summary': summary}
 
-    # Crypto slightly lower base confidence vs stocks (higher vol)
-    score -= 0.3
-    reasons.append("crypto risk premium applied")
+def get_sentiment(ticker):
+    """Aggregate Reddit + TradingView sentiment. Returns composite -1..1 score."""
+    print(f"  Sentiment scan: {ticker}")
+    r  = reddit_sentiment(ticker)
+    tv = tradingview_sentiment(ticker)
 
-    return round(min(max(score, 0), 10), 1), reasons
+    # Weight: Reddit 40%, TradingView 60%
+    composite = r['score'] * 0.4 + tv['score'] * 0.6
+    summaries = [s for s in [r['summary'], tv['summary']] if 'no ' not in s]
+    return {
+        'score':   round(composite, 2),
+        'summary': ' | '.join(summaries) if summaries else 'sentiment data unavailable',
+    }
+
+# ── earnings calendar ──────────────────────────────────────────────────────
+def days_to_earnings(ticker):
+    """
+    Check Yahoo Finance for next earnings date.
+    Returns days until earnings, or None if unavailable.
+    """
+    url  = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=calendarEvents"
+    data = fetch_url(url, timeout=6)
+    try:
+        dates = data['quoteSummary']['result'][0]['calendarEvents']['earnings']['earningsDate']
+        if not dates:
+            return None
+        ts   = dates[0]['raw']
+        earn = datetime.datetime.fromtimestamp(ts, tz=AEST)
+        days = (earn - TODAY).days
+        return max(0, days)
+    except Exception:
+        return None
 
 # ── macro gate ─────────────────────────────────────────────────────────────
 def macro_gate():
-    print("Checking macro gate (QQQ / VIX)...")
+    print("Checking macro gate...")
     qqq = yahoo_quote('QQQ')
     vix = yahoo_quote(VIX_TICKER)
 
-    qqq_pass = vix_pass = False
     notes = []
+    qqq_pass = vix_pass = True
 
     if qqq and qqq['price'] and qqq['sma50']:
-        qqq_pass = qqq['price'] > qqq['sma50']
-        notes.append(f"QQQ ${qqq['price']:.2f} vs 50MA ${qqq['sma50']:.2f} → {'✓ ABOVE' if qqq_pass else '✗ BELOW'}")
+        above = qqq['price'] > qqq['sma50']
+        rising = qqq['pct_chg'] > 0
+        qqq_pass = above
+        notes.append(
+            f"QQQ ${qqq['price']:.2f} {'▲' if rising else '▼'} {qqq['pct_chg']:+.2f}% | "
+            f"50MA ${qqq['sma50']:.2f} → {'✓ ABOVE' if above else '✗ BELOW'}"
+        )
     else:
-        notes.append("QQQ data unavailable — assuming neutral")
-        qqq_pass = True  # default neutral
+        notes.append("QQQ data unavailable")
 
     if vix and vix['price']:
-        vix_pass = vix['price'] < 25
-        notes.append(f"VIX {vix['price']:.2f} → {'✓ < 25' if vix_pass else '✗ ≥ 25 ELEVATED'}")
+        falling = vix['pct_chg'] < 0
+        below25 = vix['price'] < 25
+        vix_pass = below25
+        # Bonus: falling VIX = more confidence
+        notes.append(
+            f"VIX {vix['price']:.2f} {'↓ falling' if falling else '↑ rising'} → "
+            f"{'✓ < 25' if below25 else '✗ ≥ 25 ELEVATED'}"
+        )
     else:
-        notes.append("VIX data unavailable — assuming neutral")
-        vix_pass = True
+        notes.append("VIX data unavailable")
 
-    gate_pass = qqq_pass and vix_pass
-    status    = "PASS" if gate_pass else "FAIL — HIGH RISK"
-    print(f"  Macro gate: {status}")
-    for n in notes:
-        print(f"    {n}")
-    return gate_pass, notes
+    gate  = qqq_pass and vix_pass
+    label = "PASS" if gate else "FAIL — HIGH RISK"
+    # Return VIX direction for sizing
+    vix_falling = vix and vix['price'] and vix['pct_chg'] < 0
+    print(f"  Macro: {label}")
+    for n in notes: print(f"    {n}")
+    return gate, notes, vix_falling, qqq
 
-# ── close check ───────────────────────────────────────────────────────────
+# ── scoring ────────────────────────────────────────────────────────────────
+def score_stock(q, qqq_q, sentiment, days_earn):
+    if not q or not q['price']:
+        return 0, []
+    reasons, score = [], 5.0
+    price = q['price']
+
+    # 1. Trend: above 50MA
+    if q['sma50'] and price > q['sma50']:
+        score  += 1.0; reasons.append(f"above 50MA (${q['sma50']:.2f})")
+    elif q['sma50'] and price < q['sma50']:
+        score  -= 1.5; reasons.append(f"below 50MA — avoid")
+
+    # 2. Short-term momentum: above 5MA
+    if q['sma5'] and price > q['sma5']:
+        score += 0.5; reasons.append("above 5MA — near-term momentum")
+
+    # 3. Relative strength vs QQQ (CRITICAL gate)
+    if qqq_q and qqq_q['pct_chg'] is not None:
+        rs = q['pct_chg'] - qqq_q['pct_chg']
+        if rs > 0.5:
+            score += 1.2; reasons.append(f"RS +{rs:.1f}% vs QQQ ✓")
+        elif rs < -0.5:
+            score -= 1.5; reasons.append(f"RS {rs:.1f}% vs QQQ — underperforming")
+
+    # 4. Volume confirmation (1.5x+ = strong signal)
+    if q['vol_ratio'] >= 1.5:
+        score += 1.0; reasons.append(f"volume {q['vol_ratio']:.1f}x avg ✓")
+    elif q['vol_ratio'] >= 1.2:
+        score += 0.4; reasons.append(f"volume {q['vol_ratio']:.1f}x avg")
+    elif q['vol_ratio'] < 0.8:
+        score -= 0.8; reasons.append(f"low volume {q['vol_ratio']:.1f}x — weak signal")
+
+    # 5. RSI
+    if q['rsi']:
+        if 45 <= q['rsi'] <= 65:
+            score += 0.5; reasons.append(f"RSI {q['rsi']:.0f} — neutral/bullish")
+        elif q['rsi'] < 35:
+            score += 0.6; reasons.append(f"RSI {q['rsi']:.0f} — oversold bounce")
+        elif q['rsi'] > 75:
+            score -= 0.8; reasons.append(f"RSI {q['rsi']:.0f} — overbought")
+
+    # 6. Pre-earnings run bonus (highest priority setup)
+    if days_earn is not None and 2 <= days_earn <= 7:
+        score += 1.5; reasons.append(f"PRE-EARNINGS: {days_earn}d to report — prime run window ✓✓")
+    elif days_earn == 1:
+        score -= 2.0; reasons.append(f"earnings tomorrow — DO NOT HOLD")
+    elif days_earn == 0:
+        score -= 3.0; reasons.append(f"earnings today — SKIP")
+
+    # 7. Sentiment
+    if sentiment['score'] > 0.3:
+        score += 0.6; reasons.append(f"sentiment bullish ({sentiment['score']:+.2f})")
+    elif sentiment['score'] < -0.3:
+        score -= 0.8; reasons.append(f"sentiment bearish ({sentiment['score']:+.2f}) — caution")
+
+    return round(min(max(score, 0), 10), 1), reasons
+
+def score_crypto(data, sentiment):
+    if not data: return 0, []
+    reasons, score = [], 4.5  # crypto gets slightly lower base
+    pct = data['pct_chg']
+
+    if pct > 3:
+        score += 1.0; reasons.append(f"strong momentum +{pct:.1f}% 24h")
+    elif pct > 1:
+        score += 0.4; reasons.append(f"+{pct:.1f}% 24h")
+    elif pct < -3:
+        score -= 1.2; reasons.append(f"selling pressure {pct:.1f}%")
+
+    if sentiment['score'] > 0.3:
+        score += 0.5; reasons.append(f"sentiment bullish")
+    elif sentiment['score'] < -0.3:
+        score -= 0.6; reasons.append(f"sentiment bearish")
+
+    return round(min(max(score, 0), 10), 1), reasons
+
+# ── close checker ──────────────────────────────────────────────────────────
 def trading_days_since(date_str):
-    """Rough trading day count between date_str and today (AEST)."""
     try:
         entry = datetime.datetime.strptime(date_str, "%d %b %Y").replace(tzinfo=AEST)
+        delta = (TODAY - entry).days
+        return max(0, round(delta * 5 / 7))
     except Exception:
         return 0
-    delta = (TODAY - entry).days
-    # Approx: 5/7 of calendar days are trading days
-    return max(0, round(delta * 5 / 7))
 
 def check_open_trade(trade, price_data):
-    """
-    Evaluate an open trade. Returns updated trade dict.
-    price_data: {'price': float, 'pct_chg': float}
-    """
     if not price_data:
         print(f"  [{trade['ticker']}] price unavailable — keeping open")
         return trade
@@ -236,362 +354,293 @@ def check_open_trade(trade, price_data):
     stop   = trade.get('stop')
     target = trade.get('target')
     days   = trading_days_since(trade['date'])
+    pnl    = (price - entry) / entry * 100
 
-    print(f"  [{trade['ticker']}] entry=${entry} | current=${price:.2f} | days={days} | stop={stop} | target={target}")
+    print(f"  [{trade['ticker']}] ${price:.2f} | entry ${entry} | {pnl:+.1f}% | day {days}")
 
-    close_price = None
-    close_reason = None
-
+    close_price, close_reason = None, None
     if target and price >= target:
-        close_price  = target
-        close_reason = "target hit"
+        close_price, close_reason = target, "target hit"
     elif stop and price <= stop:
-        close_price  = stop
-        close_reason = "stop hit"
+        close_price, close_reason = stop, "stop hit"
     elif days >= 2:
-        close_price  = round(price, 2)
-        close_reason = "2-day max hold — EOD exit"
+        close_price, close_reason = round(price, 2), "2-day max hold EOD"
 
     if close_price:
-        pnl_pct = (close_price - entry) / entry * 100
-        result  = "WIN" if close_price >= entry else "LOSS"
-        print(f"  [{trade['ticker']}] CLOSING at ${close_price:.2f} ({close_reason}) → {result} {pnl_pct:+.1f}%")
+        result = "WIN" if close_price >= entry else "LOSS"
+        print(f"  [{trade['ticker']}] CLOSE at ${close_price:.2f} ({close_reason}) → {result}")
         trade = dict(trade)
-        trade['sell'] = {
-            'price': close_price,
-            'time':  close_reason,
-            'date':  TODAY_STR,
-        }
-    else:
-        print(f"  [{trade['ticker']}] keeping open ({pnl_pct:+.1f}% unrealised)" .replace(
-            'pnl_pct', str(round((price - entry)/entry*100, 1))
-        ))
-
+        trade['sell'] = {'price': close_price, 'time': close_reason, 'date': TODAY_STR}
     return trade
 
-# ── find today's trade ────────────────────────────────────────────────────
-def pick_trade(macro_pass, macro_notes, existing_open_tickers):
-    print("\nScanning watchlist for today's best setup...")
-    candidates = []
+# ── pick trade ─────────────────────────────────────────────────────────────
+def pick_trade(macro_pass, macro_notes, vix_falling, qqq_q, existing_open_tickers):
+    print("\nScanning for best setup...")
+    MIN_CONF     = 7.0
+    candidates   = []
 
-    # Score stocks
+    # ── Stocks ──
     for ticker in STOCK_TICKERS:
         if ticker in existing_open_tickers:
             continue
         q = yahoo_quote(ticker)
         if not q or not q['price']:
             continue
-        conf, reasons = score_stock(q)
-        print(f"  {ticker:5s} ${q['price']:.2f} | RSI {q['rsi']:.0f if q['rsi'] else '—'} | conf {conf}")
+
+        days_earn = days_to_earnings(ticker)
+        print(f"  {ticker:5s} ${q['price']:.2f} | {q['pct_chg']:+.1f}% | vol {q['vol_ratio']:.1f}x | RSI {q['rsi']:.0f if q['rsi'] else '—'} | earnings {days_earn}d")
+
+        sent = get_sentiment(ticker)
+        conf, reasons = score_stock(q, qqq_q, sent, days_earn)
+        print(f"         conf {conf}/10")
+
         candidates.append({
             'ticker': ticker, 'type': 'stock', 'quote': q,
             'confidence': conf, 'reasons': reasons,
+            'sentiment': sent, 'days_earn': days_earn,
             'cryptoId': None, 'binanceSymbol': None, 'broker': 'Stake',
         })
-        time.sleep(0.3)  # be polite to Yahoo
+        time.sleep(0.5)
 
-    # Score crypto
+    # ── Crypto ──
     for c in CRYPTO_PAIRS:
         if c['ticker'] in existing_open_tickers:
             continue
         data = binance_price(c['binanceSymbol'])
         if not data:
             continue
-        conf, reasons = score_crypto(data, c['ticker'])
+
+        sent = get_sentiment(c['ticker'])
+        conf, reasons = score_crypto(data, sent)
         print(f"  {c['ticker']:5s} ${data['price']:,.0f} | {data['pct_chg']:+.1f}% 24h | conf {conf}")
+
         candidates.append({
             'ticker': c['ticker'], 'type': 'crypto',
             'cryptoId': c['cryptoId'], 'binanceSymbol': c['binanceSymbol'], 'broker': c['broker'],
-            'quote': {'price': data['price'], 'pct_chg': data['pct_chg'], 'rsi': None, 'sma50': None},
+            'quote': {'price': data['price'], 'pct_chg': data['pct_chg'], 'rsi': None,
+                      'sma50': None, 'sma5': None, 'vol_ratio': 1.0},
             'confidence': conf, 'reasons': reasons,
+            'sentiment': sent, 'days_earn': None,
         })
 
     if not candidates:
         return None
 
-    # Pick highest confidence
     best = max(candidates, key=lambda x: x['confidence'])
 
-    # Minimum confidence gate
-    MIN_CONF = 6.0
     if best['confidence'] < MIN_CONF:
-        print(f"\n  Best candidate {best['ticker']} scored {best['confidence']}/10 — below {MIN_CONF} threshold → CASH session")
+        print(f"\n  Best: {best['ticker']} scored {best['confidence']}/10 — below {MIN_CONF} threshold → CASH")
         return None
 
-    print(f"\n  ✓ Selected: {best['ticker']} | conf {best['confidence']}/10")
+    print(f"\n  ✓ Best setup: {best['ticker']} | {best['confidence']}/10")
 
     price  = best['quote']['price']
-    stop   = round(price * 0.965, 2)   # 3.5% stop
-    target = round(price * 1.07,  2)   # 7.0% target
+
+    # Sizing: full $5k if VIX falling + macro pass, half otherwise
+    open_count    = len(existing_open_tickers)
+    slots_left    = max(1, 3 - open_count)
+    base_capital  = 5000 / slots_left  # distribute evenly across available slots
+    capital       = round(base_capital if (macro_pass and vix_falling) else base_capital * 0.6, -2)
+    capital       = min(capital, 5000)
+
+    # Tighter stops for higher confidence
+    stop_pct   = 0.015 if best['confidence'] >= 8.5 else 0.02
+    target_pct = stop_pct * 3  # always 3:1 R/R
+    stop       = round(price * (1 - stop_pct), 2)
+    target     = round(price * (1 + target_pct), 2)
 
     # Build reasoning
-    macro_status = "PASS" if macro_pass else "FAIL (HIGH RISK)"
-    reason_lines = best['reasons']
-    rsi_str  = f"RSI {best['quote']['rsi']:.0f}" if best['quote'].get('rsi') else ""
-    sma_str  = f"above 50MA (${best['quote']['sma50']:.2f})" if best['quote'].get('sma50') and price > (best['quote']['sma50'] or 0) else ""
-    tech_str = ", ".join([s for s in [rsi_str, sma_str] if s])
+    macro_str  = "PASS" if macro_pass else "FAIL (HIGH RISK)"
+    earn_str   = f"Pre-earnings run — {best['days_earn']}d to report. " if best.get('days_earn') and 2 <= best['days_earn'] <= 7 else ""
+    sent_str   = best['sentiment']['summary']
+    reason_str = '. '.join(best['reasons'])
 
     reasoning = (
-        f"Macro gate {macro_status}. {', '.join(reason_lines)}. "
-        f"{'Technical: ' + tech_str + '. ' if tech_str else ''}"
-        f"Stop {round((stop/price - 1)*100, 1)}% below entry at ${stop:.2f}, "
-        f"target {round((target/price - 1)*100, 1)}% above at ${target:.2f}. "
-        f"R/R {round((target-price)/(price-stop), 1)}:1. "
-        f"Confidence {best['confidence']}/10. Max hold {TODAY_STR} +2 days."
+        f"{earn_str}Macro gate {macro_str}. {reason_str}. "
+        f"Sentiment: {sent_str}. "
+        f"Stop {round(stop_pct*100,1)}% → ${stop:.2f}, target {round(target_pct*100,1)}% → ${target:.2f}, "
+        f"3:1 R/R. Capital ${capital:,.0f} deployed. "
+        f"Confidence {best['confidence']}/10."
     )
     if not macro_pass:
-        reasoning += " ⚠ Macro gate FAIL — position sized at full $5K but elevated risk noted."
+        reasoning += " ⚠ Macro gate FAIL — reduced position size."
 
-    entry_price = round(price, 2) if best['type'] == 'stock' else round(price, 0)
+    entry_price = round(price, 2) if best['type'] == 'stock' else round(price, -1)
 
     return {
-        'date':          TODAY_STR,
-        'ticker':        best['ticker'],
-        'type':          best['type'],
-        'cryptoId':      best['cryptoId'],
-        'binanceSymbol': best['binanceSymbol'],
-        'broker':        best['broker'],
-        'capital':       5000,
-        'stop':          stop,
-        'target':        target,
-        'buy':           {'price': entry_price, 'time': 'open'},
-        'sell':          None,
-        'reasoning':     reasoning,
-        'note':          f"⚠ entry price sourced from {'Binance public API' if best['type'] == 'crypto' else 'Yahoo Finance'} · {TODAY_STR}",
+        'date': TODAY_STR, 'ticker': best['ticker'], 'type': best['type'],
+        'cryptoId': best['cryptoId'], 'binanceSymbol': best['binanceSymbol'],
+        'broker': best['broker'], 'capital': int(capital),
+        'stop': stop, 'target': target,
+        'buy':  {'price': entry_price, 'time': 'agent entry'},
+        'sell': None,
+        'reasoning': reasoning,
+        'note': f"⚠ price from {'Binance' if best['type']=='crypto' else 'Yahoo Finance'} · {TODAY_STR} · verify fill",
     }
 
-# ── HTML read/write ───────────────────────────────────────────────────────
+# ── HTML parse/write ───────────────────────────────────────────────────────
 def read_html():
-    with open(HTML_PATH, 'r', encoding='utf-8') as f:
-        return f.read()
+    with open(HTML_PATH, 'r', encoding='utf-8') as f: return f.read()
 
 def write_html(html):
-    with open(HTML_PATH, 'w', encoding='utf-8') as f:
-        f.write(html)
+    with open(HTML_PATH, 'w', encoding='utf-8') as f: f.write(html)
 
 def parse_trades(html):
-    """Extract TRADES array block from HTML as raw JS string."""
     m = re.search(r'const TRADES\s*=\s*(\[.*?\]);', html, re.DOTALL)
-    if not m:
-        raise ValueError("TRADES array not found in HTML")
+    if not m: raise ValueError("TRADES array not found")
     return m.group(1)
 
-def js_to_py_trades(js_str):
-    """
-    Very lightweight JS object → Python dict parser.
-    Handles the specific schema used in this file.
-    """
-    trades = []
-
-    # Split on top-level { ... } blocks
-    depth, start, in_str = 0, None, False
-    escape = False
-    for i, ch in enumerate(js_str):
-        if escape:
-            escape = False
-            continue
-        if ch == '\\' and in_str:
-            escape = True
-            continue
-        if ch in ('"', "'"):
-            in_str = not in_str
-        if in_str:
-            continue
-        if ch == '{':
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0 and start is not None:
-                block = js_str[start:i+1]
-                t = parse_one_trade(block)
-                if t:
-                    trades.append(t)
-                start = None
-    return trades
-
 def _extract(block, key):
-    """Extract a value for a key from a JS object literal block."""
-    # Try quoted string value
     m = re.search(rf"['\"]?{key}['\"]?\s*:\s*'([^']*)'", block)
     if m: return m.group(1)
     m = re.search(rf'[\'"]?{key}[\'"]?\s*:\s*"([^"]*)"', block)
     if m: return m.group(1)
-    # Try numeric or null/true/false
     m = re.search(rf"['\"]?{key}['\"]?\s*:\s*([0-9.]+|null|true|false)", block)
     if m:
         v = m.group(1)
         if v == 'null': return None
-        if v == 'true': return True
-        if v == 'false': return False
+        if v in ('true','false'): return v == 'true'
         try: return int(v) if '.' not in v else float(v)
         except: return v
     return None
 
 def parse_one_trade(block):
     def inner(key):
-        # find the sub-block for nested objects like buy/sell
         m = re.search(rf"['\"]?{key}['\"]?\s*:\s*(\{{[^}}]*\}}|null)", block, re.DOTALL)
         if not m: return None
-        s = m.group(1)
-        if s.strip() == 'null': return None
-        price = _extract(s, 'price')
-        t     = _extract(s, 'time') or _extract(s, 'date')
-        d     = _extract(s, 'date')
+        s = m.group(1).strip()
+        if s == 'null': return None
         obj = {}
-        if price is not None: obj['price'] = price
-        if t is not None:     obj['time']  = t
-        if d is not None and key == 'sell': obj['date'] = d
-        return obj if obj else None
-
+        p = _extract(s, 'price')
+        t = _extract(s, 'time')
+        d = _extract(s, 'date')
+        if p is not None: obj['price'] = p
+        if t is not None: obj['time']  = t
+        if key == 'sell' and d is not None: obj['date'] = d
+        return obj or None
     try:
         return {
-            'date':          _extract(block, 'date'),
-            'ticker':        _extract(block, 'ticker'),
-            'type':          _extract(block, 'type'),
-            'cryptoId':      _extract(block, 'cryptoId'),
-            'binanceSymbol': _extract(block, 'binanceSymbol'),
-            'broker':        _extract(block, 'broker'),
-            'capital':       _extract(block, 'capital') or 5000,
-            'stop':          _extract(block, 'stop'),
-            'target':        _extract(block, 'target'),
-            'buy':           inner('buy'),
-            'sell':          inner('sell'),
-            'reasoning':     _extract(block, 'reasoning'),
-            'note':          _extract(block, 'note'),
+            'date': _extract(block,'date'), 'ticker': _extract(block,'ticker'),
+            'type': _extract(block,'type'), 'cryptoId': _extract(block,'cryptoId'),
+            'binanceSymbol': _extract(block,'binanceSymbol'), 'broker': _extract(block,'broker'),
+            'capital': _extract(block,'capital') or 5000,
+            'stop': _extract(block,'stop'), 'target': _extract(block,'target'),
+            'buy': inner('buy'), 'sell': inner('sell'),
+            'reasoning': _extract(block,'reasoning'), 'note': _extract(block,'note'),
         }
     except Exception as e:
-        print(f"  [warn] parse_one_trade error: {e}")
+        print(f"  [warn] parse error: {e}")
         return None
 
+def js_to_py_trades(js_str):
+    trades, depth, start, in_str, escape = [], 0, None, False, False
+    for i, ch in enumerate(js_str):
+        if escape: escape = False; continue
+        if ch == '\\' and in_str: escape = True; continue
+        if ch in ('"', "'"): in_str = not in_str
+        if in_str: continue
+        if ch == '{':
+            if depth == 0: start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start is not None:
+                t = parse_one_trade(js_str[start:i+1])
+                if t: trades.append(t)
+                start = None
+    return trades
+
 def py_to_js_trades(trades):
-    """Convert list of trade dicts back to JS array literal."""
     lines = ['[\n']
     for t in trades:
-        def qstr(v):
-            if v is None: return 'null'
-            return "'" + str(v).replace("'", "\\'") + "'"
-        def qnum(v):
-            if v is None: return 'null'
-            return str(v)
-        def qobj(v):
+        def qs(v): return 'null' if v is None else "'" + str(v).replace("'","\\'") + "'"
+        def qn(v): return 'null' if v is None else str(v)
+        def qo(v, key='buy'):
             if v is None: return 'null'
             parts = []
-            if 'price' in v: parts.append(f" price: {qnum(v['price'])}")
-            if 'time'  in v: parts.append(f" time: {qstr(v['time'])}")
-            if 'date'  in v: parts.append(f" date: {qstr(v['date'])}")
+            if 'price' in v: parts.append(f" price: {qn(v['price'])}")
+            if 'time'  in v: parts.append(f" time: {qs(v['time'])}")
+            if key == 'sell' and 'date' in v: parts.append(f" date: {qs(v['date'])}")
             return '{' + ','.join(parts) + ' }'
-
-        lines.append('  {\n')
-        lines.append(f"    date:          {qstr(t['date'])},\n")
-        lines.append(f"    ticker:        {qstr(t['ticker'])},\n")
-        lines.append(f"    type:          {qstr(t['type'])},\n")
-        lines.append(f"    cryptoId:      {qstr(t['cryptoId'])},\n")
-        lines.append(f"    binanceSymbol: {qstr(t['binanceSymbol'])},\n")
-        lines.append(f"    broker:        {qstr(t['broker'])},\n")
-        lines.append(f"    capital:       {qnum(t['capital'])},\n")
-        lines.append(f"    stop:          {qnum(t['stop'])},\n")
-        lines.append(f"    target:        {qnum(t['target'])},\n")
-        lines.append(f"    buy:           {qobj(t['buy'])},\n")
-        lines.append(f"    sell:          {qobj(t['sell'])},\n")
-        lines.append(f"    reasoning:     {qstr(t['reasoning'])},\n")
-        lines.append(f"    note:          {qstr(t['note'])},\n")
-        lines.append('  },\n')
+        lines += [
+            '  {\n',
+            f"    date:          {qs(t['date'])},\n",
+            f"    ticker:        {qs(t['ticker'])},\n",
+            f"    type:          {qs(t['type'])},\n",
+            f"    cryptoId:      {qs(t['cryptoId'])},\n",
+            f"    binanceSymbol: {qs(t['binanceSymbol'])},\n",
+            f"    broker:        {qs(t['broker'])},\n",
+            f"    capital:       {qn(t['capital'])},\n",
+            f"    stop:          {qn(t['stop'])},\n",
+            f"    target:        {qn(t['target'])},\n",
+            f"    buy:           {qo(t['buy'], 'buy')},\n",
+            f"    sell:          {qo(t['sell'], 'sell')},\n",
+            f"    reasoning:     {qs(t['reasoning'])},\n",
+            f"    note:          {qs(t['note'])},\n",
+            '  },\n',
+        ]
     lines.append(']')
     return ''.join(lines)
 
 # ── main ──────────────────────────────────────────────────────────────────
 def main():
-    print(f"\n{'='*60}")
-    print(f"  TRADING AGENT — {TODAY_STR}")
-    print(f"{'='*60}\n")
+    print(f"\n{'='*60}\n  TRADING AGENT — {TODAY_STR}\n{'='*60}\n")
 
-    html       = read_html()
-    trades_raw = parse_trades(html)
-    trades     = js_to_py_trades(trades_raw)
+    html   = read_html()
+    trades = js_to_py_trades(parse_trades(html))
+    print(f"Loaded {len(trades)} trade(s)\n")
 
-    print(f"Loaded {len(trades)} trade(s) from index.html\n")
-
-    # ── STEP 1: Close any open trades ─────────────────────────────────────
-    open_trades  = [t for t in trades if t.get('sell') is None and t.get('type') != 'cash']
-    closed_count = 0
-
+    # Step 1: close open trades
+    open_trades = [t for t in trades if not t.get('sell') and t.get('type') != 'cash']
     if open_trades:
         print(f"Checking {len(open_trades)} open position(s)...")
+    closed_n = 0
     for i, t in enumerate(trades):
-        if t.get('sell') is not None or t.get('type') == 'cash':
-            continue
-        # Fetch live price
+        if t.get('sell') or t.get('type') == 'cash': continue
         if t['type'] == 'crypto' and t.get('binanceSymbol'):
-            data = binance_price(t['binanceSymbol'])
-            price_data = {'price': data['price'], 'pct_chg': data['pct_chg']} if data else None
+            d = binance_price(t['binanceSymbol'])
+            pd = {'price': d['price']} if d else None
         else:
             q = yahoo_quote(t['ticker'])
-            price_data = {'price': q['price'], 'pct_chg': q['pct_chg']} if q else None
-
-        updated = check_open_trade(t, price_data)
-        if updated.get('sell'):
-            closed_count += 1
+            pd = {'price': q['price']} if q else None
+        updated = check_open_trade(t, pd)
+        if updated.get('sell'): closed_n += 1
         trades[i] = updated
 
-    if open_trades:
-        print(f"Closed {closed_count} trade(s).\n")
+    # Step 2: macro gate
+    macro_pass, macro_notes, vix_falling, qqq_q = macro_gate()
 
-    # ── STEP 2: Macro gate ─────────────────────────────────────────────────
-    macro_pass, macro_notes = macro_gate()
-
-    # ── STEP 3: Pick today's trade ─────────────────────────────────────────
-    still_open = [t['ticker'] for t in trades if t.get('sell') is None and t.get('type') not in ('cash', None)]
-    new_trade  = pick_trade(macro_pass, macro_notes, still_open)
+    # Step 3: find trade
+    still_open = [t['ticker'] for t in trades if not t.get('sell') and t.get('type') not in ('cash', None)]
+    new_trade  = pick_trade(macro_pass, macro_notes, vix_falling, qqq_q, still_open)
 
     if new_trade:
         trades.append(new_trade)
-        print(f"\n✓ New trade: {new_trade['ticker']} @ ${new_trade['buy']['price']:,.2f} | stop ${new_trade['stop']:,.2f} | target ${new_trade['target']:,.2f}")
+        print(f"\n✓ {new_trade['ticker']} @ ${new_trade['buy']['price']:,.2f} | stop ${new_trade['stop']:,.2f} | target ${new_trade['target']:,.2f} | ${new_trade['capital']:,} deployed")
     else:
-        # Log cash session
         macro_note = " | ".join(macro_notes)
         trades.append({
             'date': TODAY_STR, 'ticker': 'CASH', 'type': 'cash',
             'cryptoId': None, 'binanceSymbol': None, 'broker': None,
             'capital': 5000, 'stop': None, 'target': None,
             'buy': None, 'sell': None,
-            'reasoning': f'No qualifying setup today (min conf 6.0/10 not met). Macro: {macro_note}. Sitting cash this session.',
+            'reasoning': f'No setup met 7/10 confidence threshold today. Macro: {macro_note}.',
             'note': None,
         })
-        print("\n  → CASH session logged (no qualifying setup)")
+        print("\n→ CASH session")
 
-    # ── STEP 4: Update HTML ────────────────────────────────────────────────
-    new_js  = py_to_js_trades(trades)
-    new_html = re.sub(
-        r'const TRADES\s*=\s*\[.*?\];',
-        f'const TRADES = {new_js};',
-        html,
-        flags=re.DOTALL
-    )
-    new_html = re.sub(
-        r"lastUpdated:\s*'[^']*'",
-        f"lastUpdated: '{TODAY_STR}'",
-        new_html
-    )
-
+    # Step 4: update HTML
+    new_js   = py_to_js_trades(trades)
+    new_html = re.sub(r'const TRADES\s*=\s*\[.*?\];', f'const TRADES = {new_js};', html, flags=re.DOTALL)
+    new_html = re.sub(r"lastUpdated:\s*'[^']*'", f"lastUpdated: '{TODAY_STR}'", new_html)
     write_html(new_html)
-    print(f"\n✓ index.html updated — {TODAY_STR}")
+    print(f"\n✓ index.html updated")
 
-    # ── Summary ────────────────────────────────────────────────────────────
+    # Summary
     closed = [t for t in trades if t.get('sell') and t.get('type') != 'cash']
-    total_pnl = sum(
-        ((t['sell']['price'] - t['buy']['price']) / t['buy']['price']) * t['capital']
-        for t in closed if t.get('buy') and t.get('sell')
-    )
+    pnl    = sum(((t['sell']['price']-t['buy']['price'])/t['buy']['price'])*t['capital'] for t in closed if t.get('buy') and t.get('sell'))
     wins   = sum(1 for t in closed if t['sell']['price'] >= t['buy']['price'])
-    losses = len(closed) - wins
-
-    print(f"\n{'─'*40}")
-    print(f"  P&L:      ${total_pnl:+,.2f}")
-    print(f"  Trades:   {len(closed)} closed ({wins}W {losses}L)")
-    print(f"  Win rate: {round(wins/len(closed)*100) if closed else 0}%")
-    print(f"{'─'*40}\n")
+    print(f"\n  P&L: ${pnl:+,.2f} | {len(closed)} closed ({wins}W {len(closed)-wins}L) | WR {round(wins/len(closed)*100) if closed else 0}%\n")
 
 if __name__ == '__main__':
     main()

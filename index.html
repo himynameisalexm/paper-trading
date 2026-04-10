@@ -495,17 +495,31 @@ hr.divider { border: none; border-top: 1px solid #121212; margin: 1px 0; }
 //  CONFIG
 // ═══════════════════════════════════════════════════════════════════════════
 const CONFIG = {
-  totalCapital: 5000,       // total pool — split across concurrent positions
+  totalCapital: 5000,
   lastUpdated:  '11 Apr 2026',
   audusd:       0.6280,
   rules: {
-    maxHoldDays:   2,       // intraday to 2 days
-    intradayOk:    true,    // buy and sell same day allowed
-    minConfidence: 6.0,
-    stopPct:       0.035,   // 3.5% hard stop
-    targetPct:     0.07,    // 7% target
-    minRR:         2.0,     // min 2:1 risk/reward
-    maxPositions:  3,       // max concurrent open positions
+    maxHoldDays:    2,       // intraday to 2 days max
+    intradayOk:     true,    // buy and sell same day
+    minConfidence:  7.0,     // raised from 6 — only high conviction
+    stopPct:        0.02,    // tightened to 2% — bigger size, same $ risk
+    targetPct:      0.06,    // 6% target — still 3:1 R/R at 2% stop
+    minRR:          3.0,     // raised from 2:1 to 3:1
+    maxPositions:   3,
+    // ── pre-trade checklist ──────────────────────────────────────────
+    // 1. QQQ green AND making higher highs on the day
+    // 2. Volume 1.5x+ average by entry time
+    // 3. Ticker outperforming QQQ on the day (relative strength)
+    // 4. Identifiable news catalyst
+    // 5. Reddit/TradingView sentiment not overwhelmingly bearish
+    // 6. NOT within 15min of open (9:30–9:45 ET) or close (3:45–4pm ET)
+    // 7. Earnings NOT within 24h
+    // ── signal priority ──────────────────────────────────────────────
+    // 1. Pre-earnings run (5–7 days before report, sell day before)
+    // 2. Volume breakout with RS > QQQ
+    // 3. Fresh tier-1 analyst upgrade + momentum
+    // 4. Oversold bounce RSI < 35 with catalyst
+    // 5. Crypto momentum off confirmed support
   },
 };
 
