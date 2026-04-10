@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "static-file-server",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "3000"],
+      "cwd": "/Users/grill/paper-trading",
+      "port": 3000
+    }
+  ]
+}
