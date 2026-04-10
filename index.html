@@ -496,7 +496,7 @@ hr.divider { border: none; border-top: 1px solid #121212; margin: 1px 0; }
 // ═══════════════════════════════════════════════════════════════════════════
 const CONFIG = {
   totalCapital: 5000,       // total pool — split across concurrent positions
-  lastUpdated:  '10 Apr 2026',
+  lastUpdated:  '11 Apr 2026',
   audusd:       0.6280,
   rules: {
     maxHoldDays:   2,       // intraday to 2 days
@@ -554,9 +554,24 @@ const TRADES = [
     stop:          145.00,
     target:        161.00,
     buy:  { price: 150.07, time: 'open consolidation' },
+    sell: { price: 145.00, time: 'stop hit — inflation data sell-off', date: '10 Apr 2026' },
+    reasoning: 'Tariff-safe AI software play. PLTR is pure software + US government contracts — fully exempt from tariff risk, making it a premium safe haven in a tariff-volatile world. Post-tariff-pause macro environment is risk-on (VIX 21, QQQ above 50MA). PLTR at $150 is a consolidation entry the day after the broad market rally. Stop triggered Apr 10 when hotter-than-expected inflation print + Burry "Anthropic eating PLTR\'s lunch" comment sent stock down 13% to $130. Hard stop at $145 executed as planned.',
+    note: '⚠ stop hit intraday Apr 10 · closed at $145 hard stop · actual close was $130.49 — stop protected from full loss',
+  },
+  {
+    date:          '11 Apr 2026',
+    ticker:        'NVDA',
+    type:          'stock',
+    cryptoId:      null,
+    binanceSymbol: null,
+    broker:        'Stake',
+    capital:       2500,
+    stop:          176.65,
+    target:        196.00,
+    buy:  { price: 183.15, time: 'morning entry' },
     sell: null,
-    reasoning: 'Tariff-safe AI software play. PLTR is pure software + US government contracts — fully exempt from tariff risk, making it a premium safe haven in a tariff-volatile world. Post-tariff-pause macro environment is risk-on (VIX 21, QQQ above 50MA). PLTR at $150 is a consolidation entry the day after the broad market rally, allowing a lower-risk entry vs chasing the open. AI government data analytics moat is deepening. Stop $145 (−3.4%), target $161 (+7.3%), 2.1:1 R/R. Max hold Apr 12. Confidence: 6.5/10.',
-    note: '⚠ entry price $150.07 sourced from Yahoo Finance Apr 10 2026 data · exact fill subject to Stake execution',
+    reasoning: 'Post-pullback bounce at historically cheap valuation. NVDA now trading at 21x forward earnings — lowest in over a year, after the broad AI sell-off. Tariff-exempt (software/IP revenue stream). Macro gate PASS: VIX 19.7 (below 25), QQQ above 50MA. Global AI capex $600B+ with NVDA as primary beneficiary. Deploying $2,500 (half pool) given inflation uncertainty — keeping powder dry for intraday add if momentum confirms. Stop $176.65 (−3.6%), target $196 (+7.0%), 2:1 R/R. Max hold Apr 13. Confidence: 7/10.',
+    note: '⚠ entry $183.15 from Yahoo Finance Apr 10 close · Apr 11 open price may differ · verify fill on Stake',
   },
 ];
 
