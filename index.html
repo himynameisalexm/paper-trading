@@ -495,9 +495,18 @@ hr.divider { border: none; border-top: 1px solid #121212; margin: 1px 0; }
 //  CONFIG
 // ═══════════════════════════════════════════════════════════════════════════
 const CONFIG = {
-  capital:     5000,
-  lastUpdated: '10 Apr 2026',
-  audusd:      0.6280,
+  totalCapital: 5000,       // total pool — split across concurrent positions
+  lastUpdated:  '10 Apr 2026',
+  audusd:       0.6280,
+  rules: {
+    maxHoldDays:   2,       // intraday to 2 days
+    intradayOk:    true,    // buy and sell same day allowed
+    minConfidence: 6.0,
+    stopPct:       0.035,   // 3.5% hard stop
+    targetPct:     0.07,    // 7% target
+    minRR:         2.0,     // min 2:1 risk/reward
+    maxPositions:  3,       // max concurrent open positions
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -754,8 +763,8 @@ function calcOpen(t, livePrice) {
   return { pnlDollar, pnlPct: pnlPct * 100, progress };
 }
 
-function summarise(unrealizedPnl = 0) {
-  let totalPnl = unrealizedPnl, wins = 0, losses = 0, cashSessions = 0, closed = 0;
+function summarise(unrealizedPnlMap = {}) {
+  let totalPnl = 0, wins = 0, losses = 0, cashSessions = 0, closed = 0;
   for (const t of TRADES) {
     if (t.type === 'cash') { cashSessions++; continue; }
     if (t.sell) {
@@ -765,6 +774,8 @@ function summarise(unrealizedPnl = 0) {
       if (pnlDollar >= 0) wins++; else losses++;
     }
   }
+  // Add all unrealized P&Ls from open positions
+  for (const v of Object.values(unrealizedPnlMap)) totalPnl += v;
   const winRate = closed > 0 ? Math.round((wins / closed) * 100) : null;
   return { totalPnl, wins, losses, closed, cashSessions, winRate };
 }
@@ -782,8 +793,8 @@ function setStatus(state, text) {
 // ═══════════════════════════════════════════════════════════════════════════
 //  RENDER SUMMARY
 // ═══════════════════════════════════════════════════════════════════════════
-function renderSummary(unrealizedPnl = 0) {
-  const s = summarise(unrealizedPnl);
+function renderSummary(unrealizedPnlMap = {}) {
+  const s = summarise(unrealizedPnlMap);
   const openCount = TRADES.filter(t => !t.sell && t.type !== 'cash').length;
 
   document.getElementById('summary').innerHTML = `
@@ -792,11 +803,11 @@ function renderSummary(unrealizedPnl = 0) {
       <div class="val ${s.totalPnl >= 0 ? 'green' : 'red'}" id="pnlVal">${fmtPnl(s.totalPnl)}</div>
     </div>
     <div class="stat">
-      <label>open positions</label>
-      <div class="val ${openCount > 0 ? 'green' : 'dim'}">${openCount}</div>
+      <label>open</label>
+      <div class="val ${openCount > 0 ? 'green' : 'dim'}">${openCount} / ${CONFIG.rules.maxPositions}</div>
     </div>
     <div class="stat">
-      <label>closed trades</label>
+      <label>closed</label>
       <div class="val">${s.closed}</div>
     </div>
     <div class="stat">
@@ -812,8 +823,8 @@ function renderSummary(unrealizedPnl = 0) {
       <div class="val ${s.winRate === 100 ? 'green' : ''}">${s.winRate !== null ? s.winRate + '%' : '—'}</div>
     </div>
     <div class="stat">
-      <label>capital/session</label>
-      <div class="val">$${CONFIG.capital.toLocaleString()}</div>
+      <label>pool</label>
+      <div class="val">$${CONFIG.totalCapital.toLocaleString()}</div>
     </div>
     <div class="stat">
       <label>aud/usd</label>
@@ -838,28 +849,35 @@ function renderSummary(unrealizedPnl = 0) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  RENDER OPEN CARD — always rendered, price updated in-place
+//  RENDER OPEN CARDS — supports multiple concurrent positions
 // ═══════════════════════════════════════════════════════════════════════════
-function renderOpenCardShell(trade) {
+function cardId(idx, key) { return `oc-${idx}-${key}`; }
+
+function renderAllOpenShells(openTrades) {
   const sec = document.getElementById('openSection');
+  if (!openTrades.length) { sec.innerHTML = ''; return; }
+
+  const count = openTrades.length;
   sec.innerHTML = `
-    <div class="section-label">open position</div>
-    <div class="open-card">
+    <div class="section-label">open position${count > 1 ? 's (' + count + ')' : ''}</div>
+    ${openTrades.map((trade, idx) => `
+    <div class="open-card" style="${idx < count - 1 ? 'margin-bottom:12px' : ''}">
       <div class="open-header">
         <span class="open-ticker">${trade.ticker}</span>
         <span class="badge badge-open">open</span>
         ${mktBadge(trade.type)}
         <span style="color:var(--label);font-size:11px">${trade.broker}</span>
+        <span style="color:var(--label);font-size:11px;margin-left:auto">$${(trade.capital||0).toLocaleString()} deployed</span>
       </div>
       <div class="live-price-row">
-        <div class="live-price" id="livePriceEl" style="opacity:0.35">—</div>
-        <div class="live-change" id="liveChangeEl"></div>
+        <div class="live-price" id="${cardId(idx,'price')}" style="opacity:0.35">—</div>
+        <div class="live-change" id="${cardId(idx,'chg')}"></div>
       </div>
       <div class="open-levels">
         <div><span>entry</span>${fmtPrice(trade.buy.price)}</div>
         <div><span>stop</span><span style="color:var(--red)">${fmtPrice(trade.stop)}</span></div>
         <div><span>target</span><span style="color:var(--green)">${fmtPrice(trade.target)}</span></div>
-        <div><span>capital</span>$${trade.capital.toLocaleString()}</div>
+        <div><span>entered</span>${trade.buy.time || trade.date}</div>
       </div>
       <div class="prog-wrap">
         <div class="prog-labels">
@@ -867,58 +885,61 @@ function renderOpenCardShell(trade) {
           <span>target ${fmtPrice(trade.target)}</span>
         </div>
         <div class="prog-track">
-          <div class="prog-fill" id="progFill" style="width:0%"></div>
+          <div class="prog-fill" id="${cardId(idx,'prog')}" style="width:0%"></div>
         </div>
       </div>
-      <div class="unrealized" id="unrealizedEl" style="opacity:0.35">—</div>
-      <div class="open-source" id="openSourceEl"></div>
+      <div class="unrealized" id="${cardId(idx,'pnl')}" style="opacity:0.35">—</div>
+      <div class="open-source" id="${cardId(idx,'src')}"></div>
       ${trade.note ? `<div class="open-note">${trade.note}</div>` : ''}
       ${trade.reasoning ? `
-      <div class="toggle" id="toggle-open" onclick="toggleReason('open')" style="margin-top:10px">
+      <div class="toggle" id="toggle-oc${idx}" onclick="toggleReason('oc${idx}')" style="margin-top:10px">
         <span class="caret">▶</span> thesis
       </div>
-      <div class="reasoning-body" id="body-open">
+      <div class="reasoning-body" id="body-oc${idx}">
         <div class="reasoning-text">${trade.reasoning}</div>
       </div>` : ''}
-    </div>`;
+    </div>`).join('')}`;
 }
 
-function updateOpenCard(trade, liveData) {
-  const pe  = document.getElementById('livePriceEl');
-  const ce  = document.getElementById('liveChangeEl');
-  const ue  = document.getElementById('unrealizedEl');
-  const pf  = document.getElementById('progFill');
-  const src = document.getElementById('openSourceEl');
+// unrealizedMap: { idx: pnlDollar }
+const _unrealizedMap = {};
+
+function updateOpenCard(idx, trade, liveData) {
+  const pe  = document.getElementById(cardId(idx, 'price'));
+  const ce  = document.getElementById(cardId(idx, 'chg'));
+  const ue  = document.getElementById(cardId(idx, 'pnl'));
+  const pf  = document.getElementById(cardId(idx, 'prog'));
+  const src = document.getElementById(cardId(idx, 'src'));
   if (!pe) return;
 
   const isUp = liveData.price >= trade.buy.price;
-  pe.style.opacity  = '1';
-  pe.className      = 'live-price ' + (isUp ? 'up' : 'down');
-  pe.textContent    = fmtPrice(liveData.price);
+  pe.style.opacity = '1';
+  pe.className     = 'live-price ' + (isUp ? 'up' : 'down');
+  pe.textContent   = fmtPrice(liveData.price);
 
-  if (ce) {
-    const pct = liveData.pct;
-    if (pct !== null && pct !== undefined) {
-      ce.className   = 'live-change ' + (pct >= 0 ? 'green' : 'red');
-      ce.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '% 24h';
-    }
+  if (ce && liveData.pct !== null && liveData.pct !== undefined) {
+    ce.className   = 'live-change ' + (liveData.pct >= 0 ? 'green' : 'red');
+    ce.textContent = (liveData.pct >= 0 ? '+' : '') + liveData.pct.toFixed(2) + '% 24h';
   }
 
   const calc = calcOpen(trade, liveData.price);
-  if (calc && ue) {
-    ue.style.opacity = '1';
-    ue.className     = 'unrealized ' + (calc.pnlDollar >= 0 ? 'green' : 'red');
-    ue.textContent   = fmtPnl(calc.pnlDollar) + ' (' + fmtPct(calc.pnlPct) + ')';
-  }
-  if (calc && pf) {
-    pf.className   = 'prog-fill' + (!isUp ? ' loss' : '');
-    pf.style.width = (calc.progress * 100) + '%';
+  if (calc) {
+    if (ue) {
+      ue.style.opacity = '1';
+      ue.className     = 'unrealized ' + (calc.pnlDollar >= 0 ? 'green' : 'red');
+      ue.textContent   = fmtPnl(calc.pnlDollar) + ' (' + fmtPct(calc.pnlPct) + ')';
+    }
+    if (pf) {
+      pf.className   = 'prog-fill' + (!isUp ? ' loss' : '');
+      pf.style.width = (calc.progress * 100) + '%';
+    }
+    _unrealizedMap[idx] = calc.pnlDollar;
   }
   if (src) {
     src.textContent = `source: ${liveData.source} · ${new Date().toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane' })} AEST`;
   }
 
-  renderSummary(calc ? calc.pnlDollar : 0);
+  renderSummary({ ..._unrealizedMap });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1020,52 +1041,54 @@ async function init() {
 
   renderTradeLog();
 
-  const openTrade = TRADES.find(t => !t.sell && t.type !== 'cash');
+  const openTrades = TRADES.filter(t => !t.sell && t.type !== 'cash');
 
-  if (!openTrade) {
+  if (!openTrades.length) {
     document.getElementById('openSection').innerHTML = '';
-    renderSummary(0);
+    renderSummary({});
     setStatus('ok', 'no open positions');
     return;
   }
 
-  // Always render the card shell immediately — price fills in when fetched
-  renderOpenCardShell(openTrade);
-  renderSummary(0);
-  setStatus('spin', `fetching ${openTrade.ticker} price...`);
+  // Render all shells immediately
+  renderAllOpenShells(openTrades);
+  renderSummary({});
+  setStatus('spin', `fetching prices for ${openTrades.map(t => t.ticker).join(', ')}...`);
 
-  async function fetchAndUpdate() {
+  // Per-trade fetch + update
+  async function fetchOne(idx, trade) {
     try {
-      const d = await fetchLive(openTrade);
-      if (d) {
-        updateOpenCard(openTrade, d);
-        setStatus('ok', `live · ${d.source} · ${openTrade.ticker} ${fmtPrice(d.price)} · ${new Date().toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane' })} AEST`);
-        return true;
-      }
-    } catch (e) {
-      console.warn('[price]', e.message);
-    }
-    setStatus('err', `retrying ${openTrade.ticker} price...`);
-    return false;
+      const d = await fetchLive(trade);
+      if (d) { updateOpenCard(idx, trade, d); return d; }
+    } catch (e) { console.warn('[price]', trade.ticker, e.message); }
+    return null;
   }
 
-  // Initial fetch — retry up to 5 times with 3s gap if it fails
-  let ok = await fetchAndUpdate();
-  if (!ok) {
+  // Initial fetch — all in parallel, retry failures up to 5×
+  const results = await Promise.all(openTrades.map((t, i) => fetchOne(i, t)));
+  const failed  = openTrades.filter((_, i) => !results[i]);
+
+  if (failed.length) {
     let attempts = 0;
     const retry = setInterval(async () => {
       attempts++;
-      ok = await fetchAndUpdate();
-      if (ok || attempts >= 5) {
-        clearInterval(retry);
-        if (!ok) setStatus('err', `price unavailable — will retry on next refresh`);
-      }
+      await Promise.all(failed.map((t, i) => fetchOne(openTrades.indexOf(t), t)));
+      if (attempts >= 5) clearInterval(retry);
     }, 3000);
   }
 
-  // Auto-refresh: 30s crypto, 60s stocks
-  const interval = openTrade.type === 'crypto' ? 30000 : 60000;
-  setInterval(fetchAndUpdate, interval);
+  const loaded = openTrades.filter((_, i) => results[i]);
+  if (loaded.length) {
+    setStatus('ok', `live · ${loaded.map(t => t.ticker).join(', ')} · ${new Date().toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane' })} AEST`);
+  } else {
+    setStatus('err', 'price feeds unavailable — retrying...');
+  }
+
+  // Auto-refresh each trade on its own interval
+  openTrades.forEach((trade, idx) => {
+    const interval = trade.type === 'crypto' ? 30000 : 60000;
+    setInterval(() => fetchOne(idx, trade), interval);
+  });
 }
 
 // ── Start ──
