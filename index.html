@@ -828,40 +828,10 @@ function renderSummary(unrealizedPnl = 0) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  RENDER OPEN CARD
+//  RENDER OPEN CARD — always rendered, price updated in-place
 // ═══════════════════════════════════════════════════════════════════════════
-function renderOpenCard(trade, liveData) {
+function renderOpenCardShell(trade) {
   const sec = document.getElementById('openSection');
-
-  if (!liveData) {
-    sec.innerHTML = `
-      <div class="section-label">open position</div>
-      <div class="open-card">
-        <div class="open-header">
-          <span class="open-ticker">${trade.ticker}</span>
-          <span class="badge badge-open">open</span>
-          ${mktBadge(trade.type)}
-          <span style="color:var(--label);font-size:11px">${trade.broker}</span>
-        </div>
-        <div style="color:var(--sub);margin-bottom:10px;font-size:12px">
-          ⚠ price feed unavailable — check console
-        </div>
-        <div class="open-levels">
-          <div><span>entry</span>${fmtPrice(trade.buy.price)}</div>
-          <div><span>stop</span><span style="color:var(--red)">${fmtPrice(trade.stop)}</span></div>
-          <div><span>target</span><span style="color:var(--green)">${fmtPrice(trade.target)}</span></div>
-          <div><span>broker</span>${trade.broker}</div>
-        </div>
-        ${trade.note ? `<div class="open-note">${trade.note}</div>` : ''}
-      </div>`;
-    return;
-  }
-
-  const calc = calcOpen(trade, liveData.price);
-  const isUp = liveData.price >= trade.buy.price;
-  const priceClass = isUp ? 'up' : 'down';
-  const pctSign = liveData.pct !== null ? (liveData.pct >= 0 ? '+' : '') + liveData.pct.toFixed(2) + '%' : '';
-
   sec.innerHTML = `
     <div class="section-label">open position</div>
     <div class="open-card">
@@ -872,8 +842,8 @@ function renderOpenCard(trade, liveData) {
         <span style="color:var(--label);font-size:11px">${trade.broker}</span>
       </div>
       <div class="live-price-row">
-        <div class="live-price ${priceClass}" id="livePriceEl">${fmtPrice(liveData.price)}</div>
-        ${pctSign ? `<div class="live-change ${isUp ? 'green' : 'red'}">${pctSign} 24h</div>` : ''}
+        <div class="live-price" id="livePriceEl" style="opacity:0.35">—</div>
+        <div class="live-change" id="liveChangeEl"></div>
       </div>
       <div class="open-levels">
         <div><span>entry</span>${fmtPrice(trade.buy.price)}</div>
@@ -887,22 +857,48 @@ function renderOpenCard(trade, liveData) {
           <span>target ${fmtPrice(trade.target)}</span>
         </div>
         <div class="prog-track">
-          <div class="prog-fill ${!isUp ? 'loss' : ''}" id="progFill" style="width:0%"></div>
+          <div class="prog-fill" id="progFill" style="width:0%"></div>
         </div>
       </div>
-      <div class="unrealized ${calc && calc.pnlDollar >= 0 ? 'green' : 'red'}" id="unrealizedEl">
-        ${calc ? fmtPnl(calc.pnlDollar) + ' (' + fmtPct(calc.pnlPct) + ')' : '—'}
-      </div>
-      <div class="open-source">source: ${liveData.source} · ${new Date().toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane' })} AEST</div>
+      <div class="unrealized" id="unrealizedEl" style="opacity:0.35">—</div>
+      <div class="open-source" id="openSourceEl"></div>
       ${trade.note ? `<div class="open-note">${trade.note}</div>` : ''}
     </div>`;
+}
 
-  // Animate progress bar
-  if (calc) {
-    setTimeout(() => {
-      const pf = document.getElementById('progFill');
-      if (pf) pf.style.width = (calc.progress * 100) + '%';
-    }, 100);
+function updateOpenCard(trade, liveData) {
+  const pe  = document.getElementById('livePriceEl');
+  const ce  = document.getElementById('liveChangeEl');
+  const ue  = document.getElementById('unrealizedEl');
+  const pf  = document.getElementById('progFill');
+  const src = document.getElementById('openSourceEl');
+  if (!pe) return;
+
+  const isUp = liveData.price >= trade.buy.price;
+  pe.style.opacity  = '1';
+  pe.className      = 'live-price ' + (isUp ? 'up' : 'down');
+  pe.textContent    = fmtPrice(liveData.price);
+
+  if (ce) {
+    const pct = liveData.pct;
+    if (pct !== null && pct !== undefined) {
+      ce.className   = 'live-change ' + (pct >= 0 ? 'green' : 'red');
+      ce.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '% 24h';
+    }
+  }
+
+  const calc = calcOpen(trade, liveData.price);
+  if (calc && ue) {
+    ue.style.opacity = '1';
+    ue.className     = 'unrealized ' + (calc.pnlDollar >= 0 ? 'green' : 'red');
+    ue.textContent   = fmtPnl(calc.pnlDollar) + ' (' + fmtPct(calc.pnlPct) + ')';
+  }
+  if (calc && pf) {
+    pf.className   = 'prog-fill' + (!isUp ? ' loss' : '');
+    pf.style.width = (calc.progress * 100) + '%';
+  }
+  if (src) {
+    src.textContent = `source: ${liveData.source} · ${new Date().toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane' })} AEST`;
   }
 
   renderSummary(calc ? calc.pnlDollar : 0);
@@ -1002,67 +998,57 @@ async function init() {
   updateClock();
   setInterval(updateClock, 1000);
 
-  // Footer timestamp
   const ft = document.getElementById('footerTs');
   if (ft) ft.textContent = 'last updated: ' + CONFIG.lastUpdated;
 
-  // Render closed trades immediately
   renderTradeLog();
 
-  // Find open trade
   const openTrade = TRADES.find(t => !t.sell && t.type !== 'cash');
 
   if (!openTrade) {
     document.getElementById('openSection').innerHTML = '';
     renderSummary(0);
-    setStatus('ok', 'no open positions · all prices loaded');
+    setStatus('ok', 'no open positions');
     return;
   }
 
-  setStatus('spin', `fetching live ${openTrade.ticker} price...`);
+  // Always render the card shell immediately — price fills in when fetched
+  renderOpenCardShell(openTrade);
+  renderSummary(0);
+  setStatus('spin', `fetching ${openTrade.ticker} price...`);
 
-  try {
-    const liveData = await fetchLive(openTrade);
-    if (liveData) {
-      setStatus('ok', `live · ${liveData.source} · ${openTrade.ticker} ${fmtPrice(liveData.price)} · ${new Date().toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane' })} AEST`);
-      renderOpenCard(openTrade, liveData);
-    } else {
-      setStatus('err', `price fetch failed for ${openTrade.ticker} — check console`);
-      renderOpenCard(openTrade, null);
-      renderSummary(0);
-    }
-  } catch (e) {
-    console.error('[init]', e);
-    setStatus('err', 'unexpected error — ' + e.message);
-    renderOpenCard(openTrade, null);
-    renderSummary(0);
-  }
-
-  // Auto-refresh price every 30s for crypto, 60s for stocks
-  const interval = openTrade.type === 'crypto' ? 30000 : 60000;
-  setInterval(async () => {
+  async function fetchAndUpdate() {
     try {
       const d = await fetchLive(openTrade);
-      if (!d) return;
-      setStatus('ok', `live · ${d.source} · ${openTrade.ticker} ${fmtPrice(d.price)} · ${new Date().toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane' })} AEST`);
-      // Update price element in place
-      const pe = document.getElementById('livePriceEl');
-      const ue = document.getElementById('unrealizedEl');
-      if (pe) {
-        const isUp = d.price >= openTrade.buy.price;
-        pe.className = 'live-price ' + (isUp ? 'up' : 'down');
-        pe.textContent = fmtPrice(d.price);
+      if (d) {
+        updateOpenCard(openTrade, d);
+        setStatus('ok', `live · ${d.source} · ${openTrade.ticker} ${fmtPrice(d.price)} · ${new Date().toLocaleTimeString('en-AU', { timeZone: 'Australia/Brisbane' })} AEST`);
+        return true;
       }
-      const calc = calcOpen(openTrade, d.price);
-      if (calc && ue) {
-        ue.className = 'unrealized ' + (calc.pnlDollar >= 0 ? 'green' : 'red');
-        ue.textContent = fmtPnl(calc.pnlDollar) + ' (' + fmtPct(calc.pnlPct) + ')';
-        renderSummary(calc.pnlDollar);
+    } catch (e) {
+      console.warn('[price]', e.message);
+    }
+    setStatus('err', `retrying ${openTrade.ticker} price...`);
+    return false;
+  }
+
+  // Initial fetch — retry up to 5 times with 3s gap if it fails
+  let ok = await fetchAndUpdate();
+  if (!ok) {
+    let attempts = 0;
+    const retry = setInterval(async () => {
+      attempts++;
+      ok = await fetchAndUpdate();
+      if (ok || attempts >= 5) {
+        clearInterval(retry);
+        if (!ok) setStatus('err', `price unavailable — will retry on next refresh`);
       }
-      const pf = document.getElementById('progFill');
-      if (pf && calc) pf.style.width = (calc.progress * 100) + '%';
-    } catch (_) {}
-  }, interval);
+    }, 3000);
+  }
+
+  // Auto-refresh: 30s crypto, 60s stocks
+  const interval = openTrade.type === 'crypto' ? 30000 : 60000;
+  setInterval(fetchAndUpdate, interval);
 }
 
 // ── Start ──
