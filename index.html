@@ -423,6 +423,34 @@ body::before {
 
 hr.divider { border: none; border-top: 1px solid #121212; margin: 1px 0; }
 
+/* ── watchlist ── */
+.wl-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid #121212;
+  transition: background 0.15s;
+  flex-wrap: wrap;
+}
+.wl-row:hover { background: rgba(255,255,255,0.012); }
+.wl-rank  { color: var(--sub); font-size: 11px; min-width: 18px; }
+.wl-ticker { color: var(--bright); font-weight: bold; font-size: 13px; letter-spacing: 0.05em; min-width: 44px; }
+.wl-open-tag { font-size: 10px; color: var(--sub); border: 1px solid #2a2a2a; padding: 1px 5px; }
+.wl-conf-wrap { display: flex; align-items: center; gap: 6px; min-width: 88px; }
+.wl-conf-track { width: 54px; height: 2px; background: #181818; flex-shrink: 0; }
+.wl-conf-fill  { height: 100%; }
+.wl-conf-val   { color: var(--text); font-size: 11px; }
+.wl-price { color: var(--bright); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 64px; }
+.wl-chg   { font-size: 11px; min-width: 52px; }
+.wl-chg.green { color: var(--green); }
+.wl-chg.red   { color: var(--red); }
+.wl-reasons   { color: var(--label); font-size: 11px; flex: 1; }
+.wl-sentiment { font-size: 10px; min-width: 52px; text-align: right; }
+.wl-sentiment.bull { color: var(--green); }
+.wl-sentiment.bear { color: var(--red); }
+.wl-sentiment.neut { color: var(--sub); }
+
 /* ── footer ── */
 .footer {
   margin-top: 40px;
@@ -478,6 +506,8 @@ hr.divider { border: none; border-top: 1px solid #121212; margin: 1px 0; }
 
   <div class="summary" id="summary"></div>
 
+  <div id="watchlistSection"></div>
+
   <div id="openSection"></div>
 
   <div class="section-label">trade history</div>
@@ -521,6 +551,67 @@ const CONFIG = {
     // 4. Oversold bounce RSI < 35 with catalyst
     // 5. Crypto momentum off confirmed support
   },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  WATCHLIST — updated by pre-market scan (9am AEST). null = no scan yet.
+// ═══════════════════════════════════════════════════════════════════════════
+const WATCHLIST = {
+  scannedAt:  '11 Apr 2026 09:00 AEST',
+  candidates: [
+    {
+      ticker:         'NVDA',
+      confidence:     8.2,
+      price:          188.50,
+      pctChg:         1.2,
+      rsi:            58,
+      volRatio:       1.8,
+      sentimentLabel: 'bullish',
+      sentimentScore: 0.45,
+      reasons:        ['above 50MA', 'volume 1.8x avg', 'RS +1.5% vs QQQ'],
+      earningsDays:   null,
+      isOpen:         true,
+    },
+    {
+      ticker:         'META',
+      confidence:     7.6,
+      price:          520.10,
+      pctChg:         0.8,
+      rsi:            54,
+      volRatio:       1.4,
+      sentimentLabel: 'bullish',
+      sentimentScore: 0.31,
+      reasons:        ['above 50MA', 'pre-earnings 5d', 'RS +0.6% vs QQQ'],
+      earningsDays:   5,
+      isOpen:         false,
+    },
+    {
+      ticker:         'AMD',
+      confidence:     7.1,
+      price:          112.30,
+      pctChg:         -0.3,
+      rsi:            42,
+      volRatio:       1.6,
+      sentimentLabel: 'neutral',
+      sentimentScore: 0.05,
+      reasons:        ['RSI 42 oversold bounce', 'volume 1.6x avg', 'above 5MA'],
+      earningsDays:   null,
+      isOpen:         false,
+    },
+    {
+      ticker:         'BTC',
+      confidence:     6.8,
+      price:          83200,
+      pctChg:         -1.1,
+      rsi:            null,
+      volRatio:       1.0,
+      sentimentLabel: 'neutral',
+      sentimentScore: 0.10,
+      reasons:        ['crypto momentum flat', 'below 7.0 threshold'],
+      earningsDays:   null,
+      isOpen:         false,
+    },
+  ],
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -972,6 +1063,48 @@ function updateOpenCard(idx, trade, liveData) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  RENDER WATCHLIST
+// ═══════════════════════════════════════════════════════════════════════════
+function renderWatchlist() {
+  const el = document.getElementById('watchlistSection');
+  if (!WATCHLIST || !WATCHLIST.scannedAt || !WATCHLIST.candidates.length) {
+    el.innerHTML = '';
+    return;
+  }
+
+  const rows = WATCHLIST.candidates.map((c, i) => {
+    const confPct  = Math.round(c.confidence * 10);
+    const confCol  = c.confidence >= 8 ? 'var(--green)' : c.confidence >= 7 ? '#c8963a' : 'var(--sub)';
+    const chgCls   = c.pctChg >= 0 ? 'green' : 'red';
+    const sentCls  = c.sentimentLabel === 'bullish' ? 'bull' : c.sentimentLabel === 'bearish' ? 'bear' : 'neut';
+    const earnNote = c.earningsDays != null && c.earningsDays <= 7 ? ` · earnings ${c.earningsDays}d` : '';
+    return `
+      <div class="wl-row">
+        <span class="wl-rank">#${i + 1}</span>
+        <span class="wl-ticker">${c.ticker}</span>
+        ${c.isOpen ? '<span class="wl-open-tag">open</span>' : ''}
+        <div class="wl-conf-wrap">
+          <div class="wl-conf-track">
+            <div class="wl-conf-fill" style="width:${confPct}%;background:${confCol}"></div>
+          </div>
+          <span class="wl-conf-val" style="color:${confCol}">${c.confidence}/10</span>
+        </div>
+        <span class="wl-price">${fmtPrice(c.price)}</span>
+        <span class="wl-chg ${chgCls}">${fmtPct(c.pctChg)}</span>
+        <span class="wl-reasons">${(c.reasons || []).slice(0, 3).join(' · ')}${earnNote}</span>
+        <span class="wl-sentiment ${sentCls}">${c.sentimentLabel}</span>
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="section-label" style="margin-bottom:8px">
+      watchlist · today's candidates
+      <span style="color:var(--sub);font-size:10px;margin-left:10px;text-transform:none;letter-spacing:0">scanned ${WATCHLIST.scannedAt}</span>
+    </div>
+    <div style="margin-bottom:28px">${rows}</div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  RENDER TRADE HISTORY
 // ═══════════════════════════════════════════════════════════════════════════
 function renderTradeLog() {
@@ -1068,6 +1201,7 @@ async function init() {
   const ft = document.getElementById('footerTs');
   if (ft) ft.textContent = 'last updated: ' + CONFIG.lastUpdated;
 
+  renderWatchlist();
   renderTradeLog();
 
   const openTrades = TRADES.filter(t => !t.sell && t.type !== 'cash');

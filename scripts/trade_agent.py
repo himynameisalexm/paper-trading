@@ -373,24 +373,22 @@ def check_open_trade(trade, price_data):
         trade['sell'] = {'price': close_price, 'time': close_reason, 'date': TODAY_STR}
     return trade
 
-# ── pick trade ─────────────────────────────────────────────────────────────
-def pick_trade(macro_pass, macro_notes, vix_falling, qqq_q, existing_open_tickers):
-    print("\nScanning for best setup...")
-    MIN_CONF     = 7.0
-    candidates   = []
+# ── scan all candidates ────────────────────────────────────────────────────
+def scan_candidates(qqq_q, existing_open_tickers=None):
+    """Score every ticker. Returns list sorted by confidence (desc)."""
+    existing_open_tickers = existing_open_tickers or []
+    candidates = []
 
     # ── Stocks ──
     for ticker in STOCK_TICKERS:
-        if ticker in existing_open_tickers:
-            continue
         q = yahoo_quote(ticker)
         if not q or not q['price']:
             continue
+        rsi_str = f"{q['rsi']:.0f}" if q['rsi'] else '—'
+        print(f"  {ticker:5s} ${q['price']:.2f} | {q['pct_chg']:+.1f}% | vol {q['vol_ratio']:.1f}x | RSI {rsi_str}")
 
         days_earn = days_to_earnings(ticker)
-        print(f"  {ticker:5s} ${q['price']:.2f} | {q['pct_chg']:+.1f}% | vol {q['vol_ratio']:.1f}x | RSI {q['rsi']:.0f if q['rsi'] else '—'} | earnings {days_earn}d")
-
-        sent = get_sentiment(ticker)
+        sent      = get_sentiment(ticker)
         conf, reasons = score_stock(q, qqq_q, sent, days_earn)
         print(f"         conf {conf}/10")
 
@@ -399,18 +397,16 @@ def pick_trade(macro_pass, macro_notes, vix_falling, qqq_q, existing_open_ticker
             'confidence': conf, 'reasons': reasons,
             'sentiment': sent, 'days_earn': days_earn,
             'cryptoId': None, 'binanceSymbol': None, 'broker': 'Stake',
+            'is_open': ticker in existing_open_tickers,
         })
         time.sleep(0.5)
 
     # ── Crypto ──
     for c in CRYPTO_PAIRS:
-        if c['ticker'] in existing_open_tickers:
-            continue
         data = binance_price(c['binanceSymbol'])
         if not data:
             continue
-
-        sent = get_sentiment(c['ticker'])
+        sent      = get_sentiment(c['ticker'])
         conf, reasons = score_crypto(data, sent)
         print(f"  {c['ticker']:5s} ${data['price']:,.0f} | {data['pct_chg']:+.1f}% 24h | conf {conf}")
 
@@ -421,35 +417,39 @@ def pick_trade(macro_pass, macro_notes, vix_falling, qqq_q, existing_open_ticker
                       'sma50': None, 'sma5': None, 'vol_ratio': 1.0},
             'confidence': conf, 'reasons': reasons,
             'sentiment': sent, 'days_earn': None,
+            'is_open': c['ticker'] in existing_open_tickers,
         })
 
-    if not candidates:
+    return sorted(candidates, key=lambda x: x['confidence'], reverse=True)
+
+
+def pick_best(candidates, macro_pass, macro_notes, vix_falling, existing_open_tickers):
+    """From a scored candidates list, pick and build the best trade to execute."""
+    MIN_CONF = 7.0
+    eligible = [c for c in candidates
+                if c['ticker'] not in existing_open_tickers and c['confidence'] >= MIN_CONF]
+
+    if not eligible:
+        best_any = candidates[0] if candidates else None
+        if best_any:
+            print(f"\n  Best: {best_any['ticker']} scored {best_any['confidence']}/10 — below {MIN_CONF} threshold → CASH")
         return None
 
-    best = max(candidates, key=lambda x: x['confidence'])
-
-    if best['confidence'] < MIN_CONF:
-        print(f"\n  Best: {best['ticker']} scored {best['confidence']}/10 — below {MIN_CONF} threshold → CASH")
-        return None
-
+    best  = eligible[0]
+    price = best['quote']['price']
     print(f"\n  ✓ Best setup: {best['ticker']} | {best['confidence']}/10")
 
-    price  = best['quote']['price']
+    open_count   = len(existing_open_tickers)
+    slots_left   = max(1, 3 - open_count)
+    base_capital = 5000 / slots_left
+    capital      = round(base_capital if (macro_pass and vix_falling) else base_capital * 0.6, -2)
+    capital      = min(capital, 5000)
 
-    # Sizing: full $5k if VIX falling + macro pass, half otherwise
-    open_count    = len(existing_open_tickers)
-    slots_left    = max(1, 3 - open_count)
-    base_capital  = 5000 / slots_left  # distribute evenly across available slots
-    capital       = round(base_capital if (macro_pass and vix_falling) else base_capital * 0.6, -2)
-    capital       = min(capital, 5000)
-
-    # Tighter stops for higher confidence
     stop_pct   = 0.015 if best['confidence'] >= 8.5 else 0.02
-    target_pct = stop_pct * 3  # always 3:1 R/R
+    target_pct = stop_pct * 3
     stop       = round(price * (1 - stop_pct), 2)
     target     = round(price * (1 + target_pct), 2)
 
-    # Build reasoning
     macro_str  = "PASS" if macro_pass else "FAIL (HIGH RISK)"
     earn_str   = f"Pre-earnings run — {best['days_earn']}d to report. " if best.get('days_earn') and 2 <= best['days_earn'] <= 7 else ""
     sent_str   = best['sentiment']['summary']
@@ -477,6 +477,57 @@ def pick_trade(macro_pass, macro_notes, vix_falling, qqq_q, existing_open_ticker
         'reasoning': reasoning,
         'note': f"⚠ price from {'Binance' if best['type']=='crypto' else 'Yahoo Finance'} · {TODAY_STR} · verify fill",
     }
+
+
+# ── watchlist HTML write ───────────────────────────────────────────────────
+def py_to_js_watchlist(candidates, scanned_at):
+    top   = candidates[:5]
+    items = []
+    for c in top:
+        q         = c['quote']
+        pct_chg   = round(q.get('pct_chg') or 0, 2)
+        rsi       = q.get('rsi')
+        vol_ratio = round(q.get('vol_ratio') or 1.0, 1)
+        reasons   = c['reasons'][:3]
+        sent_score = c['sentiment']['score']
+        sent_label = 'bullish' if sent_score > 0.2 else 'bearish' if sent_score < -0.2 else 'neutral'
+        earn_days  = c.get('days_earn')
+
+        item = (
+            f"    {{\n"
+            f"      ticker:         '{c['ticker']}',\n"
+            f"      confidence:     {c['confidence']},\n"
+            f"      price:          {round(q['price'], 2)},\n"
+            f"      pctChg:         {pct_chg},\n"
+            f"      rsi:            {'null' if rsi is None else round(rsi)},\n"
+            f"      volRatio:       {vol_ratio},\n"
+            f"      sentimentLabel: '{sent_label}',\n"
+            f"      sentimentScore: {sent_score},\n"
+            f"      reasons:        {json.dumps(reasons)},\n"
+            f"      earningsDays:   {'null' if earn_days is None else earn_days},\n"
+            f"      isOpen:         {'true' if c.get('is_open') else 'false'},\n"
+            f"    }}"
+        )
+        items.append(item)
+
+    return (
+        f"{{\n"
+        f"  scannedAt:  '{scanned_at}',\n"
+        f"  candidates: [\n"
+        + ',\n'.join(items) + '\n'
+        f"  ],\n"
+        f"}}"
+    )
+
+
+def write_watchlist(html, candidates, scanned_at):
+    wl_js = py_to_js_watchlist(candidates, scanned_at)
+    return re.sub(
+        r'const WATCHLIST\s*=\s*\{.*?\};',
+        f'const WATCHLIST = {wl_js};',
+        html,
+        flags=re.DOTALL
+    )
 
 # ── HTML parse/write ───────────────────────────────────────────────────────
 def read_html():
@@ -584,35 +635,53 @@ def py_to_js_trades(trades):
 
 # ── main ──────────────────────────────────────────────────────────────────
 def main():
-    print(f"\n{'='*60}\n  TRADING AGENT — {TODAY_STR}\n{'='*60}\n")
+    watchlist_only = os.environ.get('WATCHLIST_ONLY', '0') == '1'
+    mode = 'PRE-MARKET SCAN' if watchlist_only else 'TRADE EXECUTION'
+    print(f"\n{'='*60}\n  TRADING AGENT [{mode}] — {TODAY_STR}\n{'='*60}\n")
 
     html   = read_html()
     trades = js_to_py_trades(parse_trades(html))
     print(f"Loaded {len(trades)} trade(s)\n")
 
-    # Step 1: close open trades
-    open_trades = [t for t in trades if not t.get('sell') and t.get('type') != 'cash']
-    if open_trades:
-        print(f"Checking {len(open_trades)} open position(s)...")
-    closed_n = 0
-    for i, t in enumerate(trades):
-        if t.get('sell') or t.get('type') == 'cash': continue
-        if t['type'] == 'crypto' and t.get('binanceSymbol'):
-            d = binance_price(t['binanceSymbol'])
-            pd = {'price': d['price']} if d else None
-        else:
-            q = yahoo_quote(t['ticker'])
-            pd = {'price': q['price']} if q else None
-        updated = check_open_trade(t, pd)
-        if updated.get('sell'): closed_n += 1
-        trades[i] = updated
+    still_open = [t['ticker'] for t in trades if not t.get('sell') and t.get('type') not in ('cash', None)]
+
+    # Step 1 (execution only): close open trades
+    if not watchlist_only:
+        if still_open:
+            print(f"Checking {len(still_open)} open position(s)...")
+        for i, t in enumerate(trades):
+            if t.get('sell') or t.get('type') == 'cash': continue
+            if t['type'] == 'crypto' and t.get('binanceSymbol'):
+                d  = binance_price(t['binanceSymbol'])
+                pd = {'price': d['price']} if d else None
+            else:
+                q  = yahoo_quote(t['ticker'])
+                pd = {'price': q['price']} if q else None
+            updated = check_open_trade(t, pd)
+            trades[i] = updated
+        still_open = [t['ticker'] for t in trades if not t.get('sell') and t.get('type') not in ('cash', None)]
 
     # Step 2: macro gate
     macro_pass, macro_notes, vix_falling, qqq_q = macro_gate()
 
-    # Step 3: find trade
-    still_open = [t['ticker'] for t in trades if not t.get('sell') and t.get('type') not in ('cash', None)]
-    new_trade  = pick_trade(macro_pass, macro_notes, vix_falling, qqq_q, still_open)
+    # Step 3: scan all candidates (used for both watchlist + trade selection)
+    print("\nScanning all candidates...")
+    candidates = scan_candidates(qqq_q, existing_open_tickers=still_open)
+
+    # Step 4: write watchlist to HTML
+    scan_time = TODAY.strftime("%d %b %Y %H:%M AEST")
+    html = write_watchlist(html, candidates, scan_time)
+    print(f"\n✓ Watchlist updated — top {min(5, len(candidates))} candidates written")
+
+    if watchlist_only:
+        # Pre-market scan: write watchlist + update timestamp, no trade execution
+        new_html = re.sub(r"lastUpdated:\s*'[^']*'", f"lastUpdated: '{TODAY_STR}'", html)
+        write_html(new_html)
+        print(f"✓ index.html updated (watchlist only)\n")
+        return
+
+    # Step 5: pick and execute best trade
+    new_trade = pick_best(candidates, macro_pass, macro_notes, vix_falling, still_open)
 
     if new_trade:
         trades.append(new_trade)
@@ -629,7 +698,7 @@ def main():
         })
         print("\n→ CASH session")
 
-    # Step 4: update HTML
+    # Step 6: update HTML with trades + watchlist
     new_js   = py_to_js_trades(trades)
     new_html = re.sub(r'const TRADES\s*=\s*\[.*?\];', f'const TRADES = {new_js};', html, flags=re.DOTALL)
     new_html = re.sub(r"lastUpdated:\s*'[^']*'", f"lastUpdated: '{TODAY_STR}'", new_html)

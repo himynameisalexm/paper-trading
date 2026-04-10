@@ -1,0 +1,41 @@
+name: Pre-Market Watchlist Scan
+
+on:
+  schedule:
+    # Runs at 23:00 UTC = 9:00 AM AEST (Mon–Fri)
+    # One hour before trade execution — gives you advance notice
+    - cron: '0 23 * * 0-4'
+  workflow_dispatch:  # allow manual trigger
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run pre-market watchlist scan
+        env:
+          WATCHLIST_ONLY: '1'
+        run: python scripts/trade_agent.py
+
+      - name: Commit and push updated watchlist
+        run: |
+          git config user.name  "trading-agent[bot]"
+          git config user.email "trading-agent@users.noreply.github.com"
+          git add index.html
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            DATE=$(date -u '+%d %b %Y')
+            git commit -m "scan: pre-market watchlist ${DATE}"
+            git push origin main
+          fi
