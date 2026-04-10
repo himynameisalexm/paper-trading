@@ -678,18 +678,28 @@ async function fetchCrypto(trade) {
 }
 
 async function fetchStock(trade) {
-  for (const host of ['query1', 'query2']) {
-    const d = await getJSON(
-      `https://${host}.finance.yahoo.com/v8/finance/chart/${trade.ticker}?interval=1m&range=1d`, 5500
-    );
-    try {
-      const meta = d.chart.result[0].meta;
-      const price = meta.regularMarketPrice;
-      const prev  = meta.chartPreviousClose || meta.previousClose;
-      const pct   = ((price - prev) / prev) * 100;
-      return { price, pct, source: 'Yahoo Finance' };
-    } catch (_) {}
+  const yahooUrl = (host) =>
+    `https://${host}.finance.yahoo.com/v8/finance/chart/${trade.ticker}?interval=1m&range=1d`;
+
+  function parseYahoo(d) {
+    const meta  = d.chart.result[0].meta;
+    const price = meta.regularMarketPrice;
+    const prev  = meta.chartPreviousClose || meta.previousClose;
+    const pct   = ((price - prev) / prev) * 100;
+    return { price, pct, source: 'Yahoo Finance' };
   }
+
+  // 1. Direct Yahoo (works on github.io, blocked on localhost)
+  for (const host of ['query1', 'query2']) {
+    const d = await getJSON(yahooUrl(host), 5000);
+    try { return parseYahoo(d); } catch (_) {}
+  }
+
+  // 2. CORS proxy fallback (for local preview)
+  const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(yahooUrl('query1'))}`;
+  const d = await getJSON(proxyUrl, 7000);
+  try { return parseYahoo(d); } catch (_) {}
+
   return null;
 }
 
@@ -863,6 +873,13 @@ function renderOpenCardShell(trade) {
       <div class="unrealized" id="unrealizedEl" style="opacity:0.35">—</div>
       <div class="open-source" id="openSourceEl"></div>
       ${trade.note ? `<div class="open-note">${trade.note}</div>` : ''}
+      ${trade.reasoning ? `
+      <div class="toggle" id="toggle-open" onclick="toggleReason('open')" style="margin-top:10px">
+        <span class="caret">▶</span> thesis
+      </div>
+      <div class="reasoning-body" id="body-open">
+        <div class="reasoning-text">${trade.reasoning}</div>
+      </div>` : ''}
     </div>`;
 }
 
